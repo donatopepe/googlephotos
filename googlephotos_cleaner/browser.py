@@ -198,6 +198,12 @@ class PlaywrightBrowser:
                 media_id = f"visible-index-{len(ids)}"
             item.click()
             ids.append(media_id)
+            # Google Photos may re-render selection state after each tile click.
+            # Pace only between selections, never after the final target.
+            if len(ids) < count:
+                self.page.wait_for_timeout(150)
+        # Let Google Photos settle final selection toolbar before Trash click.
+        self.page.wait_for_timeout(750)
         selected_count = self.page.locator(
             '[role="checkbox"][aria-checked="true"][aria-label*=" - "]'
         ).count()

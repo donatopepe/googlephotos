@@ -193,6 +193,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         class Page:
             def __init__(self):
                 self.media = DynamicLocator()
+                self.waits = []
 
             def goto(self, *_args, **_kwargs):
                 pass
@@ -203,8 +204,8 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             def evaluate(self, *_args):
                 pass
 
-            def wait_for_timeout(self, *_args):
-                pass
+            def wait_for_timeout(self, milliseconds):
+                self.waits.append(milliseconds)
 
             def locator(self, selector):
                 if 'aria-checked="true"' in selector:
@@ -219,6 +220,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         selected = browser.select_visible_batch(3)
 
         self.assertEqual(selected, ["photo-1", "photo-2", "photo-3"])
+        self.assertEqual(browser.page.waits, [250, 150, 150, 750])
 
     def test_delete_selected_day_marks_missing_selection_without_feedback_as_pending(self):
         page = Mock()
