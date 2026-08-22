@@ -224,6 +224,24 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(browser.select_visible_batch(3), ["photo-1", "photo-2", "photo-3"])
         self.assertEqual(browser.page.mouse.wheel.call_count, 2)
 
+    def test_visible_batch_returns_verified_partial_selection_when_next_click_stalls(self):
+        page = Mock()
+        first, second = Mock(), Mock()
+        first.get_attribute.side_effect = lambda name: "false" if name == "aria-checked" else "photo-1"
+        second.get_attribute.side_effect = lambda name: "false" if name == "aria-checked" else "photo-2"
+        media = Mock()
+        media.count.side_effect = [2, 2, 2]
+        media.nth.side_effect = [first, second]
+        selected = Mock()
+        selected.count.side_effect = [0, 1, 1, 1, 1]
+        page.locator.side_effect = lambda selector: selected if 'aria-checked="true"' in selector else media
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertEqual(browser.select_visible_batch(2), ["photo-1"])
+        first.click.assert_called_once_with()
+        second.click.assert_called_once_with()
+
     def test_visible_batch_requires_each_click_to_increment_selection_count(self):
         page = Mock()
         item = Mock()

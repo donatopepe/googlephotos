@@ -223,6 +223,10 @@ class PlaywrightBrowser:
             item.click()
             self.page.wait_for_timeout(150)
             if selected.count() <= selected_before:
+                # Keep already verified selections. Stop filling this batch and
+                # let one Trash action clear the visible Google Photos state.
+                if ids:
+                    break
                 raise CleanerError("Selection did not increment; refusing trash action")
             seen_ids.add(media_id)
             ids.append(media_id)
