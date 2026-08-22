@@ -187,28 +187,28 @@ class PlaywrightBrowser:
         if count == 0:
             return []
 
+        selected = self.page.locator(
+            '[role="checkbox"][aria-checked="true"][aria-label*=" - "]'
+        )
         ids: list[str] = []
         for _ in range(count):
             current_count = locator.count()
             if current_count == 0:
                 break
+            selected_before = selected.count()
             item = locator.first
             media_id = item.get_attribute("data-media-key") or item.get_attribute("data-id")
             if not media_id:
                 media_id = f"visible-index-{len(ids)}"
             item.click()
+            self.page.wait_for_timeout(150)
+            if selected.count() <= selected_before:
+                raise CleanerError("Selection did not increment; refusing trash action")
             ids.append(media_id)
-            # Google Photos may re-render selection state after each tile click.
-            # Pace only between selections, never after the final target.
-            if len(ids) < count:
-                self.page.wait_for_timeout(150)
         # Let Google Photos settle final selection toolbar before Trash click.
         self.page.wait_for_timeout(750)
-        selected_count = self.page.locator(
-            '[role="checkbox"][aria-checked="true"][aria-label*=" - "]'
-        ).count()
-        if selected_count < len(ids):
-            raise CleanerError("Selection could not be verified; refusing trash action")
+        if selected.count() != len(ids):
+            raise CleanerError("Selection count is inconsistent; refusing trash action")
         return ids
 
     def target_exists(self, label: str) -> bool:

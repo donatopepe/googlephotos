@@ -161,6 +161,27 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             "[role=checkbox][aria-checked=\"true\"]",
         )
 
+    def test_visible_batch_requires_each_click_to_increment_selection_count(self):
+        page = Mock()
+        item = Mock()
+        item.get_attribute.return_value = "photo-1"
+        selected = Mock()
+        selected.count.return_value = 0
+        media = Mock()
+        media.count.return_value = 1
+        media.first = item
+        def locate(selector):
+            return selected if 'aria-checked="true"' in selector else media
+        page.locator.side_effect = locate
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._first_viewport_control = Mock(return_value=item)
+
+        with self.assertRaisesRegex(Exception, "Selection did not increment"):
+            browser.select_visible_batch(1)
+
+        item.click.assert_called_once_with()
+
     def test_selection_handles_locator_that_shrinks_after_each_click(self):
         class Item:
             def __init__(self, name, owner):
@@ -208,10 +229,11 @@ class BrowserDiagnosticsTests(unittest.TestCase):
                 self.waits.append(milliseconds)
 
             def locator(self, selector):
-                if 'aria-checked="true"' in selector:
-                    selected = Mock()
-                    selected.count.return_value = len(self.media.selected)
-                    return selected
+                if selector != PlaywrightBrowser.MEDIA_SELECTORS[0]:
+                    class Selected:
+                        def count(inner_self):
+                            return len(self.media.selected)
+                    return Selected()
                 return self.media
 
         browser = object.__new__(PlaywrightBrowser)
@@ -220,7 +242,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         selected = browser.select_visible_batch(3)
 
         self.assertEqual(selected, ["photo-1", "photo-2", "photo-3"])
-        self.assertEqual(browser.page.waits, [250, 150, 150, 750])
+        self.assertEqual(browser.page.waits, [250, 150, 150, 150, 750])
 
     def test_delete_selected_day_marks_missing_selection_without_feedback_as_pending(self):
         page = Mock()
