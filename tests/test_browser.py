@@ -394,7 +394,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         page.wait_for_timeout.assert_called_once_with(250)
 
-    def test_recover_reloads_page_and_dismisses_known_dialogs(self):
+    def test_recover_preserves_timeline_and_dismisses_known_dialogs(self):
         page = Mock()
         page.url = "https://photos.google.com/"
         page.locator.return_value.count.return_value = 0
@@ -403,7 +403,8 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         browser.recover()
 
-        page.reload.assert_called_once_with(wait_until="domcontentloaded")
+        page.reload.assert_not_called()
+        page.wait_for_timeout.assert_called_once_with(500)
 
 
 if __name__ == "__main__":

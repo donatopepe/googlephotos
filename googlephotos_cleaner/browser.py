@@ -338,9 +338,9 @@ class PlaywrightBrowser:
         self.page.wait_for_timeout(1000)
 
     def recover(self) -> None:
-        """Perform only safe pre-action recovery steps."""
+        """Dismiss transient overlays without reloading or resetting timeline."""
         self._dismiss_transient_dialogs()
-        self.page.reload(wait_until="domcontentloaded")
+        self.page.wait_for_timeout(500)
 
     def _dismiss_transient_dialogs(self) -> None:
         for name in (
