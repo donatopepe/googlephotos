@@ -52,7 +52,14 @@ def run(argv=None) -> int:
         # never reopen Chrome or move the timeline.
         while True:
             cleaner.run()
-            browser.page.wait_for_timeout(1000)
+            # Keep one browser/context alive; recoverable scan stalls are handled
+            # inside Cleaner and must not turn into a five-minute inspection sleep.
+            try:
+                browser.page.wait_for_timeout(1000)
+            except RuntimeError as exc:
+                logger.error("Browser page closed: %s", exc)
+                diagnostic.event("browser_page_closed", "ERROR", error_type=type(exc).__name__)
+                return 1
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
         return 130

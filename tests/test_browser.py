@@ -224,6 +224,20 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(browser.select_visible_batch(3), ["photo-1", "photo-2", "photo-3"])
         self.assertEqual(browser.page.mouse.wheel.call_count, 2)
 
+    def test_visible_batch_uses_existing_manual_selection_before_new_clicks(self):
+        page = Mock()
+        selected = Mock()
+        selected.count.return_value = 3
+        page.locator.return_value = selected
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertEqual(
+            browser.select_visible_batch(100),
+            ["already-selected-1", "already-selected-2", "already-selected-3"],
+        )
+        page.wait_for_selector.assert_called_once()
+
     def test_visible_batch_returns_verified_partial_selection_when_next_click_stalls(self):
         page = Mock()
         first, second = Mock(), Mock()
@@ -233,7 +247,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         media.count.side_effect = [2, 2, 2]
         media.nth.side_effect = [first, second]
         selected = Mock()
-        selected.count.side_effect = [0, 1, 1, 1, 1]
+        selected.count.side_effect = [0, 0, 1, 1, 1, 1]
         page.locator.side_effect = lambda selector: selected if 'aria-checked="true"' in selector else media
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page

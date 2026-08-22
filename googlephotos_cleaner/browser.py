@@ -182,10 +182,18 @@ class PlaywrightBrowser:
     def select_visible_batch(self, batch_size: int) -> Sequence[str]:
         self.page.wait_for_selector(self.MEDIA_SELECTORS[0], timeout=30000)
         self.wait_for_current_timeline()
-        locator = self._media_locator()
         selected = self.page.locator(
             '[role="checkbox"][aria-checked="true"][aria-label*=" - "]'
         )
+        preselected_count = selected.count()
+        if preselected_count:
+            # Preserve user/manual selection rather than attempting another tile
+            # click over an open Google Photos selection overlay.
+            self.page.wait_for_timeout(750)
+            if selected.count() != preselected_count:
+                raise CleanerError("Existing selection changed; refusing trash action")
+            return [f"already-selected-{index + 1}" for index in range(preselected_count)]
+        locator = self._media_locator()
         ids: list[str] = []
         seen_ids: set[str] = set()
         empty_scrolls = 0
