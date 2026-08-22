@@ -84,13 +84,16 @@ class PendingActionStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def save(self, *, label: str, kind: str, scroll_top: int, **_ignored: Any) -> None:
+    def save(self, *, label: str, kind: str, scroll_top: int, **extra: Any) -> None:
         payload = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "label": label,
             "kind": kind,
             "scroll_top": scroll_top,
         }
+        for key, value in extra.items():
+            if key.lower() not in _SENSITIVE_KEYS:
+                payload[key] = _sanitize(value, key)
         fd, temporary = tempfile.mkstemp(
             prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent
         )

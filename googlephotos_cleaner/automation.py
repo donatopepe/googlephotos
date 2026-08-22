@@ -87,6 +87,17 @@ class Cleaner:
         if self.pending:
             previous = self.pending.load()
             if previous:
+                # A media batch has no stable single checkbox label to reconcile.
+                # Preserve its journal and block all later destructive work rather
+                # than mistaking a virtualized DOM disappearance for completion.
+                if previous.get("kind") == "media_batch":
+                    self._event(
+                        "pending_batch_unresolved",
+                        "WARNING",
+                        target=previous["label"],
+                        count=previous.get("count"),
+                    )
+                    return 0
                 target_exists = getattr(self.browser, "target_exists", None)
                 retry_pending = getattr(self.browser, "retry_pending_action", None)
                 if target_exists is None:
@@ -153,6 +164,14 @@ class Cleaner:
                 self.logger.info("Dry-run: found %d visible photos", len(media_ids))
             else:
                 self._event("trash_started", count=len(media_ids))
+                if self.pending:
+                    self.pending.save(
+                        label=f"batch:{processed + 1}",
+                        kind="media_batch",
+                        scroll_top=0,
+                        count=len(media_ids),
+                        media_ids=list(media_ids),
+                    )
                 try:
                     self.browser.move_selected_to_trash(media_ids)
                 except Exception as exc:
@@ -169,6 +188,8 @@ class Cleaner:
                     raise DestructiveActionAmbiguous(
                         "Trash result is ambiguous; refusing destructive retry"
                     ) from exc
+                if self.pending:
+                    self.pending.clear()
                 self._event("trash_completed", count=len(media_ids))
                 self.logger.info("Moved %d photos to Trash", len(media_ids))
 

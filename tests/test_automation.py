@@ -159,6 +159,24 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(browser.recover_calls, 1)
         self.assertEqual(browser.trashed, [["day"]])
 
+    def test_ambiguous_media_batch_is_journaled_and_blocks_followup_trash(self):
+        class AmbiguousBatchBrowser(FakeBrowser):
+            def move_selected_to_trash(self, _media_ids):
+                raise TimeoutError("unknown batch result")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            browser = AmbiguousBatchBrowser([["photo-1", "photo-2"]])
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(browser, day_mode=False, pending=pending).run()
+            record = pending.load()
+            self.assertEqual(record["kind"], "media_batch")
+            self.assertEqual(record["count"], 2)
+
+            browser = FakeBrowser([["photo-3"]])
+            self.assertEqual(Cleaner(browser, day_mode=False, pending=pending).run(), 0)
+            self.assertEqual(browser.trashed, [])
+
     def test_cleaner_uses_selection_size_as_visible_batch_limit(self):
         browser = FakeBrowser([["photo-1", "photo-2", "photo-3"]])
 
