@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+data/browser-profile/
+data/browser-profile/.googlephotos.lock
+data/*.log
+data/*.jsonl
+data/checkpoint.json
+data/pending-action.json
+data/diagnostics/
+*.log
+.env
+.DS_Store
