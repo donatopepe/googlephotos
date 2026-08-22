@@ -183,28 +183,50 @@ class PlaywrightBrowser:
         self.page.wait_for_selector(self.MEDIA_SELECTORS[0], timeout=30000)
         self.wait_for_current_timeline()
         locator = self._media_locator()
-        count = min(locator.count(), batch_size)
-        if count == 0:
-            return []
-
         selected = self.page.locator(
             '[role="checkbox"][aria-checked="true"][aria-label*=" - "]'
         )
         ids: list[str] = []
-        for _ in range(count):
+        seen_ids: set[str] = set()
+        empty_scrolls = 0
+        while len(ids) < batch_size:
             current_count = locator.count()
             if current_count == 0:
+                # User-authorized batch mode: reveal the next materialized window
+                # with one real timeline scroll, then continue the same selection.
+                if empty_scrolls >= 10 or not self.advance_timeline():
+                    break
+                empty_scrolls += 1
+                continue
+            item = None
+            media_id = None
+            # Re-check each materialized tile: Google Photos can keep a stale
+            # locator entry after its aria-checked state changes.
+            for index in range(current_count):
+                candidate = locator.nth(index)
+                if candidate.get_attribute("aria-checked") != "false":
+                    continue
+                candidate_id = candidate.get_attribute("data-media-key") or candidate.get_attribute("data-id")
+                if not candidate_id:
+                    candidate_id = f"visible-index-{len(ids)}-{index}"
+                if candidate_id in seen_ids:
+                    continue
+                item = candidate
+                media_id = candidate_id
                 break
+            if item is None or media_id is None:
+                if empty_scrolls >= 10 or not self.advance_timeline():
+                    break
+                empty_scrolls += 1
+                continue
             selected_before = selected.count()
-            item = locator.first
-            media_id = item.get_attribute("data-media-key") or item.get_attribute("data-id")
-            if not media_id:
-                media_id = f"visible-index-{len(ids)}"
             item.click()
             self.page.wait_for_timeout(150)
             if selected.count() <= selected_before:
                 raise CleanerError("Selection did not increment; refusing trash action")
+            seen_ids.add(media_id)
             ids.append(media_id)
+            empty_scrolls = 0
         # Let Google Photos settle final selection toolbar before Trash click.
         self.page.wait_for_timeout(750)
         if selected.count() != len(ids):

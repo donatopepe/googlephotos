@@ -161,15 +161,81 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             "[role=checkbox][aria-checked=\"true\"]",
         )
 
+    def test_visible_batch_scrolls_for_more_media_until_batch_limit(self):
+        class Item:
+            def __init__(self, name, owner):
+                self.name = name
+                self.owner = owner
+
+            def get_attribute(self, name):
+                if name in {"data-id", "data-media-key"}:
+                    return self.name
+                if name == "aria-checked":
+                    return "false" if self.name not in self.owner.selected else "true"
+                return None
+
+            def click(self):
+                self.owner.selected.append(self.name)
+
+        class Page:
+            def __init__(self):
+                self.stages = [["photo-1"], ["photo-2"], ["photo-3"]]
+                self.stage = 0
+                self.selected = []
+                self.waits = []
+                self.mouse = Mock()
+                self.mouse.wheel.side_effect = self.advance
+
+            def advance(self, *_args):
+                self.stage += 1
+
+            def wait_for_selector(self, *_args, **_kwargs):
+                pass
+
+            def evaluate(self, *_args):
+                return {"width": 800, "height": 600}
+
+            def wait_for_timeout(self, milliseconds):
+                self.waits.append(milliseconds)
+
+            def locator(self, selector):
+                if selector == PlaywrightBrowser.MEDIA_SELECTORS[0]:
+                    page = self
+                    class Media:
+                        def count(inner_self):
+                            return len(page.stages[page.stage]) if page.stage < len(page.stages) else 0
+
+                        @property
+                        def first(inner_self):
+                            return Item(page.stages[page.stage][0], page)
+
+                        def nth(inner_self, index):
+                            return Item(page.stages[page.stage][index], page)
+                    return Media()
+                page = self
+                class Selected:
+                    def count(inner_self):
+                        return len(page.selected)
+                return Selected()
+
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = Page()
+
+        self.assertEqual(browser.select_visible_batch(3), ["photo-1", "photo-2", "photo-3"])
+        self.assertEqual(browser.page.mouse.wheel.call_count, 2)
+
     def test_visible_batch_requires_each_click_to_increment_selection_count(self):
         page = Mock()
         item = Mock()
-        item.get_attribute.return_value = "photo-1"
+        item.get_attribute.side_effect = lambda name: "false" if name == "aria-checked" else "photo-1"
         selected = Mock()
         selected.count.return_value = 0
+        page.evaluate.return_value = {"width": 800, "height": 600}
+        page.mouse = Mock()
         media = Mock()
-        media.count.return_value = 1
+        media.count.side_effect = [1, 1, 0]
         media.first = item
+        media.nth.return_value = item
         def locate(selector):
             return selected if 'aria-checked="true"' in selector else media
         page.locator.side_effect = locate
@@ -189,7 +255,11 @@ class BrowserDiagnosticsTests(unittest.TestCase):
                 self.owner = owner
 
             def get_attribute(self, name):
-                return self.name if name in {"data-id", "data-media-key"} else None
+                if name in {"data-id", "data-media-key"}:
+                    return self.name
+                if name == "aria-checked":
+                    return "false" if self.name not in self.owner.selected else "true"
+                return None
 
             def click(self):
                 self.owner.selected.append(self.name)
@@ -223,7 +293,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
                 pass
 
             def evaluate(self, *_args):
-                pass
+                return {"width": 800, "height": 600}
 
             def wait_for_timeout(self, milliseconds):
                 self.waits.append(milliseconds)
