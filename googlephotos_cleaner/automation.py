@@ -39,6 +39,7 @@ class Cleaner:
         day_mode: bool = True,
         max_idle_scrolls: int = 5,
         pending: PendingActionStore | None = None,
+        discard_ambiguous_media_batches: bool = False,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be greater than zero")
@@ -59,6 +60,7 @@ class Cleaner:
         self.day_mode = day_mode
         self.max_idle_scrolls = max_idle_scrolls
         self.pending = pending
+        self.discard_ambiguous_media_batches = discard_ambiguous_media_batches
 
     def _event(self, phase: str, level: str = "INFO", **context: Any) -> None:
         if self.diagnostic is not None:
@@ -91,13 +93,22 @@ class Cleaner:
                 # Preserve its journal and block all later destructive work rather
                 # than mistaking a virtualized DOM disappearance for completion.
                 if previous.get("kind") == "media_batch":
-                    self._event(
-                        "pending_batch_unresolved",
-                        "WARNING",
-                        target=previous["label"],
-                        count=previous.get("count"),
-                    )
-                    return 0
+                    if self.discard_ambiguous_media_batches:
+                        self.pending.clear()
+                        self._event(
+                            "pending_batch_discarded",
+                            "WARNING",
+                            target=previous["label"],
+                            count=previous.get("count"),
+                        )
+                    else:
+                        self._event(
+                            "pending_batch_unresolved",
+                            "WARNING",
+                            target=previous["label"],
+                            count=previous.get("count"),
+                        )
+                        return 0
                 target_exists = getattr(self.browser, "target_exists", None)
                 retry_pending = getattr(self.browser, "retry_pending_action", None)
                 if target_exists is None:

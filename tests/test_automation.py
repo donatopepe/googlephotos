@@ -177,6 +177,29 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(Cleaner(browser, day_mode=False, pending=pending).run(), 0)
             self.assertEqual(browser.trashed, [])
 
+    def test_ambiguous_media_batch_can_be_discarded_and_loop_continues(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(
+                label="batch:1",
+                kind="media_batch",
+                scroll_top=0,
+                count=2,
+                media_ids=["photo-1", "photo-2"],
+            )
+            browser = FakeBrowser([["photo-3"]])
+
+            processed = Cleaner(
+                browser,
+                day_mode=False,
+                pending=pending,
+                discard_ambiguous_media_batches=True,
+            ).run()
+
+            self.assertEqual(processed, 1)
+            self.assertIsNone(pending.load())
+            self.assertEqual(browser.trashed, [["photo-3"]])
+
     def test_cleaner_uses_selection_size_as_visible_batch_limit(self):
         browser = FakeBrowser([["photo-1", "photo-2", "photo-3"]])
 

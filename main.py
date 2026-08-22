@@ -46,6 +46,9 @@ def run(argv=None) -> int:
             day_mode=args.selection_size == 1,
             max_idle_scrolls=args.max_idle_scrolls,
             pending=pending,
+            # User authorized discarding ambiguous media batch journals instead
+            # of retrying their Trash action after a restart.
+            discard_ambiguous_media_batches=True,
         )
         # Cleaner can stop a pass for idle DOM or a journaled pending action.
         # Keep same visible browser/context and start a fresh reconciliation pass;
