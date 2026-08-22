@@ -126,6 +126,15 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             ('[role="checkbox"][aria-checked="false"]',),
         )
 
+    def test_target_absence_requires_positive_trash_feedback(self):
+        page = Mock()
+        page.get_by_role.return_value.count.return_value = 0
+        page.get_by_text.return_value.count.return_value = 0
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertFalse(browser.wait_for_target_absence("Foto - test", timeout_ms=0))
+
     def test_capture_diagnostics_writes_screenshot_and_html(self):
         page = Mock()
         page.url = "https://photos.google.com/?authuser=secret"
@@ -211,19 +220,20 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertEqual(selected, ["photo-1", "photo-2", "photo-3"])
 
-    def test_delete_selected_day_accepts_immediate_success_without_dialog(self):
+    def test_delete_selected_day_marks_missing_selection_without_feedback_as_pending(self):
         page = Mock()
         action = Mock()
         action.count.return_value = 1
         action.first = action
         page.get_by_role.return_value = action
+        page.get_by_text.return_value.count.return_value = 0
         selected = Mock()
         selected.count.side_effect = [1, 1, 0]
         page.locator.return_value = selected
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
 
-        browser.delete_selected_day()
+        self.assertFalse(browser.delete_selected_day())
 
         action.click.assert_called_once_with()
 
@@ -270,15 +280,16 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         trash.click.assert_called_once_with()
         confirmation.click.assert_called_once_with()
 
-    def test_wait_for_target_absence_polls_without_clicking(self):
+    def test_wait_for_target_absence_polls_for_positive_feedback_without_clicking(self):
         page = Mock()
-        page.get_by_role.return_value.count.side_effect = [1, 0]
+        # Five feedback strings are checked before each polling wait.
+        page.get_by_text.return_value.count.side_effect = [0, 0, 0, 0, 0, 1]
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
 
         self.assertTrue(browser.wait_for_target_absence("Foto - 2 ago", timeout_ms=1000))
         page.wait_for_timeout.assert_called_once_with(500)
-        page.get_by_role.assert_called_with("checkbox", name="Foto - 2 ago", exact=True)
+        page.get_by_role.assert_not_called()
 
     def test_wait_for_current_timeline(self):
         page = Mock()

@@ -210,14 +210,28 @@ class PlaywrightBrowser:
         """Check an exact accessible label without unsafe CSS interpolation."""
         return self.page.get_by_role("checkbox", name=label, exact=True).count() > 0
 
+    def _trash_feedback_visible(self) -> bool:
+        """Require positive Google Photos completion feedback, not DOM absence alone."""
+        feedback = (
+            "Moved to trash",
+            "Moved to Trash",
+            "Spostato nel cestino",
+            "Spostata nel cestino",
+            "Moved to bin",
+        )
+        for text in feedback:
+            if self.page.get_by_text(text, exact=False).count() > 0:
+                return True
+        return False
+
     def wait_for_target_absence(self, label: str, timeout_ms: int = 30000) -> bool:
-        """Poll post-click UI state; never performs another destructive click."""
+        """Reconcile only with positive trash feedback; never clicks Trash again."""
         deadline = time.monotonic() + timeout_ms / 1000
         while time.monotonic() < deadline:
-            if not self.target_exists(label):
+            if self._trash_feedback_visible():
                 return True
             self.page.wait_for_timeout(500)
-        return not self.target_exists(label)
+        return self._trash_feedback_visible()
 
     def delete_selected_day(self) -> bool:
         trash_names = (
@@ -240,7 +254,9 @@ class PlaywrightBrowser:
         for _ in range(10):
             self.page.wait_for_timeout(250)
             if selected_before > 0 and selected.count() == 0:
-                return True
+                # Virtualized DOM can drop selected nodes during a refresh. Only
+                # confirm success when Google Photos also exposes positive feedback.
+                return self._trash_feedback_visible()
 
         dialog = self.page.get_by_role("dialog")
         if dialog.count() == 0:
