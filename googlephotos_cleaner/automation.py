@@ -207,9 +207,12 @@ class Cleaner:
                 wait_for_timeline = getattr(self.browser, "wait_for_current_timeline", None)
                 if wait_for_timeline is not None:
                     wait_for_timeline()
-                # Never scroll a virtualized Google Photos timeline automatically.
-                # Keep current visible position and rescan after local stabilization.
                 if idle_scrolls < self.max_idle_scrolls:
+                    continue
+                advance_timeline = getattr(self.browser, "advance_timeline", None)
+                if advance_timeline is not None and advance_timeline():
+                    self._event("timeline_advanced", idle_scrolls=idle_scrolls)
+                    idle_scrolls = 0
                     continue
                 self._event("timeline_paused", "WARNING", idle_scrolls=idle_scrolls)
                 if self.checkpoint:

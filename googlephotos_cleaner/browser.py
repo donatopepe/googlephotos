@@ -88,6 +88,16 @@ class PlaywrightBrowser:
         """Let the current visible Google Photos timeline stabilize."""
         self.page.wait_for_timeout(250)
 
+    def advance_timeline(self) -> bool:
+        """Move current visible timeline down once using real visible mouse input."""
+        viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+        x = viewport["width"] / 2
+        y = viewport["height"] / 2
+        self.page.mouse.move(x, y)
+        self.page.mouse.wheel(0, 720)
+        self.page.wait_for_timeout(750)
+        return True
+
     def _first_viewport_control(self, selectors: Sequence[str]):
         """Return top-left control in viewport without programmatic scrolling.
 

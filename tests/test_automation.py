@@ -133,7 +133,7 @@ class BrowserAdapterTests(unittest.TestCase):
         processed = Cleaner(browser, day_mode=True, max_retries=1).run()
 
         self.assertEqual(processed, 1)
-        self.assertEqual(browser.advance_count, 0)
+        self.assertEqual(browser.advance_count, 1)
         self.assertEqual(browser.trashed, [["day"]])
 
     def test_cleaner_retries_day_selection_before_delete(self):
@@ -158,6 +158,29 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(processed, 1)
         self.assertEqual(browser.recover_calls, 1)
         self.assertEqual(browser.trashed, [["day"]])
+
+    def test_cleaner_advances_timeline_after_idle_scan_limit(self):
+        class TimelineBrowser(FakeBrowser):
+            def __init__(self):
+                super().__init__([("12 Aug", 3)])
+                self.scan_count = 0
+                self.advance_count = 0
+
+            def select_current_day(self):
+                self.scan_count += 1
+                if self.scan_count <= 2:
+                    return None
+                return super().select_current_day()
+
+            def advance_timeline(self):
+                self.advance_count += 1
+                return True
+
+        browser = TimelineBrowser()
+        processed = Cleaner(browser, day_mode=True, max_batches=1, max_idle_scrolls=2).run()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(browser.advance_count, 1)
 
     def test_cleaner_waits_without_scrolling_when_no_target_is_loaded(self):
         class TimelineBrowser(FakeBrowser):
