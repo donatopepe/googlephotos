@@ -47,7 +47,8 @@ Nessun prompt per foto. Per fermare, usa `Ctrl+C`; processo termina senza svuota
 --diagnostics-dir PATH screenshot/HTML errori, default data/diagnostics
 --checkpoint-file PATH checkpoint atomico, default data/checkpoint.json
 --exit-on-error        chiude browser dopo errore; default lascia browser aperto
---max-idle-scrolls N   scroll senza progresso prima di terminare, default 5
+--max-idle-scrolls N   scansioni senza progresso prima dello scroll reale, default 5
+--selection-size N     massimo numero di media visibili selezionati prima di un solo Cestino, default 1
 ```
 
 Tool clicca il primo controllo giorno disponibile `Seleziona tutte le foto a partire da: ...`, poi `Elimina`/`Sposta nel cestino` e conferma automaticamente il dialogo. Non dipende dal giorno più vecchio. Se DOM non espone giorni, scorre timeline virtualizzata, aspetta caricamento e ripete: una singola scansione senza giorni non significa libreria vuota.

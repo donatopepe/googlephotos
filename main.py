@@ -34,14 +34,16 @@ def run(argv=None) -> int:
         diagnostic.event("browser_started", url=browser.page.url)
         cleaner = Cleaner(
             browser,
-            batch_size=args.batch_size,
+            batch_size=args.selection_size if args.selection_size > 1 else args.batch_size,
             max_batches=args.max_batches,
             max_retries=args.max_retries,
             dry_run=args.dry_run,
             logger=logger,
             diagnostic=diagnostic,
             checkpoint=checkpoint,
-            day_mode=True,
+            # Multi-selection uses individually verified visible media; one target
+            # retains day-first behavior.
+            day_mode=args.selection_size == 1,
             max_idle_scrolls=args.max_idle_scrolls,
             pending=pending,
         )

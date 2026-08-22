@@ -88,11 +88,22 @@ class Cleaner:
             previous = self.pending.load()
             if previous:
                 target_exists = getattr(self.browser, "target_exists", None)
+                retry_pending = getattr(self.browser, "retry_pending_action", None)
                 if target_exists is None:
                     raise CleanerError("Pending action cannot be reconciled")
                 if not target_exists(previous["label"]):
                     self.pending.clear()
                     self._event("pending_reconciled", target=previous["label"], result="absent")
+                elif retry_pending is not None:
+                    # User-authorized after restart: click this exact pending target
+                    # once more, then require positive completion feedback.
+                    self._event("pending_retry_started", target=previous["label"])
+                    if retry_pending(previous["label"]):
+                        self.pending.clear()
+                        self._event("pending_retry_completed", target=previous["label"])
+                    else:
+                        self._event("pending_retry_unresolved", "WARNING", target=previous["label"])
+                        return 0
                 else:
                     wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
                     target_absent = (
@@ -107,9 +118,6 @@ class Cleaner:
                         )
                     else:
                         self._event("pending_reconciled", target=previous["label"], result="present")
-                        # Do not choose or click any target until a previously clicked
-                        # action is known to have settled. This prevents a duplicate
-                        # destructive action when Google Photos retains stale DOM.
                         return 0
         processed = 0
         total_photos = 0

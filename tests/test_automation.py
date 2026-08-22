@@ -159,6 +159,14 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(browser.recover_calls, 1)
         self.assertEqual(browser.trashed, [["day"]])
 
+    def test_cleaner_uses_selection_size_as_visible_batch_limit(self):
+        browser = FakeBrowser([["photo-1", "photo-2", "photo-3"]])
+
+        processed = Cleaner(browser, day_mode=False, batch_size=3).run()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(browser.trashed, [["photo-1", "photo-2", "photo-3"]])
+
     def test_cleaner_advances_timeline_after_idle_scan_limit(self):
         class TimelineBrowser(FakeBrowser):
             def __init__(self):

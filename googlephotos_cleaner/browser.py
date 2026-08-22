@@ -180,7 +180,6 @@ class PlaywrightBrowser:
         raise CleanerError("Google Photos layout not recognized; no media items found")
 
     def select_visible_batch(self, batch_size: int) -> Sequence[str]:
-        self.page.goto(self.PHOTOS_URL, wait_until="domcontentloaded")
         self.page.wait_for_selector(self.MEDIA_SELECTORS[0], timeout=30000)
         self.wait_for_current_timeline()
         locator = self._media_locator()
@@ -232,6 +231,14 @@ class PlaywrightBrowser:
                 return True
             self.page.wait_for_timeout(500)
         return self._trash_feedback_visible()
+
+    def retry_pending_action(self, label: str) -> bool:
+        """User-authorized one-time retry of a journaled pending Trash action."""
+        target = self.page.get_by_role("checkbox", name=label, exact=True)
+        if target.count() == 0:
+            return False
+        target.first.click()
+        return self.delete_selected_day()
 
     def delete_selected_day(self) -> bool:
         trash_names = (
