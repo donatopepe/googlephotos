@@ -25,6 +25,16 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(PlaywrightBrowser.LOGIN_URL, "https://photos.google.com/login")
         self.assertEqual(PlaywrightBrowser.PHOTOS_URL, "https://photos.google.com/u/0/")
 
+    def test_authenticated_session_does_not_reload_the_timeline(self):
+        page = Mock()
+        page.url = "https://photos.google.com/u/0/"
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        browser.wait_until_authenticated(timeout_seconds=1)
+
+        page.goto.assert_not_called()
+
     def test_day_selector_uses_semantic_controls_without_visible_pseudo_selector(self):
         self.assertNotIn(":visible", PlaywrightBrowser.DAY_SELECTORS[0])
         self.assertNotIn(":visible", PlaywrightBrowser.DAY_SELECTORS[1])

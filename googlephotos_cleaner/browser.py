@@ -79,7 +79,6 @@ class PlaywrightBrowser:
         while time.monotonic() < deadline:
             current_url = self.page.url
             if is_authenticated_url(current_url):
-                self.page.goto(self.PHOTOS_URL, wait_until="domcontentloaded")
                 return
             self.page.wait_for_timeout(1000)
         raise CleanerError("Google Photos login did not complete before timeout")
