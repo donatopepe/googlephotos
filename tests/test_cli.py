@@ -18,6 +18,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.max_retries, 2)
         self.assertFalse(args.exit_on_error)
         self.assertEqual(args.max_idle_scrolls, 5)
+        self.assertEqual(args.selection_size, 1)
 
     def test_parser_supports_dry_run_and_batch_limit(self):
         args = parse_args(
@@ -42,6 +43,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.max_retries, 4)
         self.assertEqual(args.diagnostics_dir, Path("custom/diagnostics"))
         self.assertEqual(args.checkpoint_file, Path("custom/checkpoint.json"))
+
+    def test_parser_supports_selection_size(self):
+        args = parse_args(["--selection-size", "4"])
+        self.assertEqual(args.selection_size, 4)
 
     def test_parser_supports_idle_scroll_limit(self):
         args = parse_args(["--max-idle-scrolls", "7"])

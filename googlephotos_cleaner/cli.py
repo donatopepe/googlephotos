@@ -51,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum visible photos handled per batch (default: 50)",
     )
     parser.add_argument(
+        "--selection-size",
+        type=_positive_int,
+        default=1,
+        help="maximum current-viewport day/media targets to select before one Trash action (default: 1)",
+    )
+    parser.add_argument(
         "--max-retries",
         type=lambda value: _non_negative_int(value),
         default=2,
