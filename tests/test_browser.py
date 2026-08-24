@@ -87,6 +87,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser.diagnostic = None
         browser._day_locator = Mock(return_value=control)
 
         result = browser.select_current_day()
@@ -128,6 +129,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser.diagnostic = None
         browser._day_locator = Mock(side_effect=[stale, fresh])
 
         result = browser.select_current_day()
@@ -142,6 +144,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser.diagnostic = None
         browser._day_locator = Mock(return_value=control)
         browser._select_single_media_for_day = Mock(return_value="Foto - Verticale - 2 ago")
 
@@ -149,6 +152,31 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             browser.select_current_day()
 
         browser._select_single_media_for_day.assert_not_called()
+
+    def test_advance_timeline_logs_wheel_and_dom_materialization(self):
+        page = Mock()
+        page.evaluate.side_effect = [
+            {"width": 1000, "height": 600},
+            {"day": 0, "media": 4},
+            {"day": 1, "media": 8},
+        ]
+        locator = Mock()
+        locator.count.side_effect = [0, 0, 4, 1, 0, 8]
+        page.locator.return_value = locator
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.scroll_step = 240
+        browser.scroll_delay_ms = 1500
+        browser.diagnostic = Mock()
+
+        self.assertTrue(browser.advance_timeline())
+
+        browser.diagnostic.event.assert_called_once()
+        context = browser.diagnostic.event.call_args.kwargs
+        self.assertEqual(context["wheel_delta_y"], 240)
+        self.assertEqual(context["dom_before"]["day"], 0)
+        self.assertEqual(context["dom_after"]["day"], 1)
+        self.assertTrue(context["materialized"])
 
     def test_advance_timeline_uses_visible_mouse_wheel_and_configured_delay(self):
         page = Mock()
@@ -180,6 +208,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser.diagnostic = None
         browser._day_locator = Mock(return_value=None)
         browser._select_single_media = Mock(return_value="Foto - fallback")
 
@@ -193,6 +222,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser.diagnostic = None
         browser._day_locator = Mock(return_value=None)
         browser._select_single_media = Mock(return_value="Video - fallback")
 
@@ -213,6 +243,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page.locator.return_value = locator
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser.diagnostic = None
 
         self.assertIsNone(browser._first_viewport_control(("[role=checkbox]",)))
 

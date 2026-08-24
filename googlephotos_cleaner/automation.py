@@ -86,9 +86,47 @@ class Cleaner:
         self.pending_timeout_ms = pending_timeout_ms
         self.last_outcome = PassOutcome.CONTINUE
 
+    def _runtime_context(self) -> dict[str, Any]:
+        context: dict[str, Any] = {
+            "pid": __import__("os").getpid(),
+            "ppid": __import__("os").getppid(),
+            "mode": "dry-run" if self.dry_run else "delete",
+            "pending_policy": self.pending_policy,
+            "pending_timeout_ms": self.pending_timeout_ms,
+            "max_batches": self.max_batches,
+            "max_retries": self.max_retries,
+            "scroll_step": getattr(self.browser, "scroll_step", None),
+            "scroll_delay_ms": getattr(self.browser, "scroll_delay_ms", None),
+        }
+        profile_dir = getattr(self.browser, "profile_dir", None)
+        if profile_dir is not None:
+            context["profile_dir"] = str(profile_dir)
+        lock = getattr(self.browser, "profile_lock", None)
+        if lock is not None:
+            context["profile_lock_path"] = str(getattr(lock, "path", ""))
+            context["profile_lock_owned"] = getattr(lock, "acquired", None)
+        return context
+
     def _event(self, phase: str, level: str = "INFO", **context: Any) -> None:
         if self.diagnostic is not None:
             self.diagnostic.event(phase, level, **context)
+        if level in {"WARNING", "ERROR"} or phase in {
+            "run_started",
+            "authenticated",
+            "day_scan",
+            "day_selection",
+            "day_trash_started",
+            "day_trash_completed",
+            "finished",
+            "batch_limit",
+            "cleaner_stopped",
+        }:
+            self.logger.log(
+                logging.getLevelNamesMapping().get(level, logging.INFO),
+                "phase=%s %s",
+                phase,
+                " ".join(f"{key}={value!r}" for key, value in context.items()),
+            )
 
     def _recover(self, attempt: int, error: Exception) -> None:
         recover = getattr(self.browser, "recover", None)
@@ -107,15 +145,24 @@ class Cleaner:
             raise CleanerError("Safe recovery failed") from recovery_error
 
     def run(self) -> int:
-        self._event("run_started", mode="dry-run" if self.dry_run else "delete")
+        self.stop_requested = False
+        self.last_outcome = PassOutcome.CONTINUE
+        self._event("run_started", **self._runtime_context())
         self.browser.wait_until_authenticated()
         self._event("authenticated")
         if self.pending:
             previous = self.pending.load()
+            self._event(
+                "pending_loaded",
+                pending_exists=previous is not None,
+                pending_kind=previous.get("kind") if previous else None,
+                pending_count=previous.get("count") if previous else None,
+            )
             if previous and self.dry_run and self.pending_policy != "discard":
                 self._event("pending_unresolved", "WARNING", target=previous.get("label"), policy=self.pending_policy)
                 self.stop_requested = True
                 self.last_outcome = PassOutcome.PENDING_UNRESOLVED
+                self._event("cleaner_stopped", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
                 return 0
             if previous and self.pending_policy == "discard":
                 self.pending.clear()
@@ -130,6 +177,7 @@ class Cleaner:
                 )
                 self.stop_requested = True
                 self.last_outcome = PassOutcome.PENDING_UNRESOLVED
+                self._event("cleaner_stopped", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
                 return 0
             if previous and previous.get("kind") == "media_batch":
                 if self.discard_ambiguous_media_batches or self.pending_policy == "discard":
@@ -160,7 +208,7 @@ class Cleaner:
                 if not target_exists(previous["label"]):
                     wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
                     target_absent = (
-                        wait_for_absence(previous["label"])
+                        wait_for_absence(previous["label"], timeout_ms=self.pending_timeout_ms)
                         if wait_for_absence is not None
                         else False
                     )
@@ -182,7 +230,7 @@ class Cleaner:
                     # again; wait only for positive feedback from the original action.
                     wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
                     target_absent = (
-                        wait_for_absence(previous["label"])
+                        wait_for_absence(previous["label"], timeout_ms=self.pending_timeout_ms)
                         if wait_for_absence is not None
                         else False
                     )
@@ -206,7 +254,7 @@ class Cleaner:
                 else:
                     wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
                     target_absent = (
-                        wait_for_absence(previous["label"])
+                        wait_for_absence(previous["label"], timeout_ms=self.pending_timeout_ms)
                         if wait_for_absence is not None
                         else False
                     )
@@ -310,7 +358,13 @@ class Cleaner:
             for attempt in range(self.max_retries + 1):
                 try:
                     day = self.browser.select_current_day()
-                    self._event("day_scan", day=day, attempt=attempt)
+                    self._event(
+                        "day_scan",
+                        day=day,
+                        attempt=attempt,
+                        max_attempts=self.max_retries + 1,
+                        selection_kind=getattr(self.browser, "last_selection_kind", None),
+                    )
                     break
                 except Exception as exc:
                     scan_failed = True
@@ -368,7 +422,13 @@ class Cleaner:
             idle_scrolls = 0
             scan_failures = 0
             if self.dry_run:
-                self._event("day_selection", day=day, dry_run=True)
+                self._event(
+                    "day_selection",
+                    day=day,
+                    dry_run=True,
+                    selection_kind=getattr(self.browser, "last_selection_kind", None),
+                    fallback=getattr(self.browser, "last_selection_kind", None) == "media",
+                )
                 self.logger.info("Dry-run: found current day %s", day)
             else:
                 self._event("day_trash_started", day=day)
@@ -383,7 +443,7 @@ class Cleaner:
                         # before any further selection or destructive action.
                         wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
                         if wait_for_absence is not None:
-                            target_absent = wait_for_absence(day)
+                            target_absent = wait_for_absence(day, timeout_ms=self.pending_timeout_ms)
                         else:
                             wait_for_timeline = getattr(self.browser, "wait_for_current_timeline", None)
                             if wait_for_timeline is not None:
@@ -391,7 +451,13 @@ class Cleaner:
                             target_absent = not self.browser.target_exists(day)
                         if self.pending and target_absent:
                             self.pending.clear()
-                            self._event("day_trash_completed", day=day, reconciled=True)
+                            self._event(
+                                "day_trash_completed",
+                                day=day,
+                                reconciled=True,
+                                positive_feedback=True,
+                                result="confirmed",
+                            )
                             self.logger.info("Moved day %s to Trash", day)
                             reset_top = getattr(self.browser, "reset_timeline_to_top", None)
                             if reset_top is not None and self.reset_timeline_after_action:
@@ -411,6 +477,7 @@ class Cleaner:
                             self._event("day_trash_unresolved", "WARNING", day=day)
                             self.stop_requested = True
                             self.last_outcome = PassOutcome.PENDING_UNRESOLVED
+                            self._event("cleaner_stopped", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
                             return processed
                         continue
                     if self.pending:
@@ -431,8 +498,14 @@ class Cleaner:
                     )
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
+                    self._event("cleaner_stopped", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
                     return processed
-                self._event("day_trash_completed", day=day)
+                self._event(
+                    "day_trash_completed",
+                    day=day,
+                    positive_feedback=True,
+                    result="confirmed",
+                )
                 self.logger.info("Moved day %s to Trash", day)
                 reset_top = getattr(self.browser, "reset_timeline_to_top", None)
                 if reset_top is not None and self.reset_timeline_after_action:

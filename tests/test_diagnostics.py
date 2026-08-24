@@ -28,6 +28,32 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(event["found"], 4)
             self.assertTrue(event["timestamp"])
 
+    def test_log_supports_verbose_runtime_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.jsonl"
+            log = DiagnosticLog(path, run_id="verbose")
+            log.event(
+                "scroll",
+                "INFO",
+                pid=123,
+                profile_lock_owner_pid=123,
+                wheel_delta_y=240,
+                viewport={"width": 1000, "height": 600},
+                dom_before={"day": 0, "media": 4},
+                dom_after={"day": 1, "media": 8},
+                materialized=True,
+                result="advanced",
+            )
+
+            event = json.loads(path.read_text().strip())
+
+            self.assertEqual(event["pid"], 123)
+            self.assertEqual(event["wheel_delta_y"], 240)
+            self.assertEqual(event["dom_before"]["media"], 4)
+            self.assertEqual(event["dom_after"]["day"], 1)
+            self.assertTrue(event["materialized"])
+            self.assertEqual(event["result"], "advanced")
+
     def test_log_redacts_nested_sensitive_context(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "run.jsonl"
@@ -41,6 +67,23 @@ class DiagnosticsTests(unittest.TestCase):
 
             self.assertNotIn("password", event["details"])
             self.assertEqual(event["details"]["url"], "https://photos.google.com/")
+
+    def test_log_redacts_page_content_and_credentials_from_verbose_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.jsonl"
+            log = DiagnosticLog(path, run_id="verbose-safe")
+            log.event(
+                "browser_state",
+                html="<input password='secret'>cookie=secret",
+                cookie="secret",
+                authorization="secret",
+                details={"token": "secret", "message": "password=secret"},
+            )
+
+            text = path.read_text()
+
+            self.assertNotIn("secret", text)
+            self.assertNotIn("<input", text)
 
     def test_log_redacts_sensitive_values_inside_messages(self):
         with tempfile.TemporaryDirectory() as tmp:

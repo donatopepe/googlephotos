@@ -13,7 +13,19 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-_SENSITIVE_KEYS = {"password", "cookie", "cookies", "token", "authorization", "secret"}
+_SENSITIVE_KEYS = {
+    "password",
+    "cookie",
+    "cookies",
+    "token",
+    "authorization",
+    "secret",
+    "html",
+    "content",
+    "inner_html",
+    "page_content",
+    "dom_content",
+}
 
 
 def redact_url(url: str | None) -> str | None:

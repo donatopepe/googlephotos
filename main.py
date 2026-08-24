@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 from googlephotos_cleaner.automation import Cleaner, CleanerError
@@ -35,8 +36,20 @@ def run(argv=None) -> int:
             headless=False,
             scroll_step=args.scroll_step,
             scroll_delay_ms=args.scroll_delay_ms,
+            diagnostic=diagnostic,
         )
-        diagnostic.event("browser_started", url=browser.page.url)
+        diagnostic.event(
+            "browser_started",
+            pid=__import__("os").getpid(),
+            ppid=__import__("os").getppid(),
+            profile_dir=str(browser.profile_dir),
+            profile_lock_path=str(browser.profile_lock.path),
+            profile_lock_owned=getattr(browser.profile_lock, "acquired", None),
+            url=browser.page.url,
+            page_count=len(browser.context.pages),
+            scroll_step=args.scroll_step,
+            scroll_delay_ms=args.scroll_delay_ms,
+        )
         cleaner = Cleaner(
             browser,
             batch_size=args.selection_size if args.selection_size > 1 else args.batch_size,
@@ -66,7 +79,14 @@ def run(argv=None) -> int:
             cleaner.run()
             if cleaner.stop_requested:
                 logger.warning("Cleaner requested safe stop")
-                diagnostic.event("cleaner_stopped", "WARNING")
+                diagnostic.event(
+                    "cleaner_stopped",
+                    "WARNING",
+                    outcome=cleaner.last_outcome.value,
+                    stop_requested=cleaner.stop_requested,
+                    pending_exists=pending.path.exists(),
+                    checkpoint_exists=checkpoint.path.exists(),
+                )
                 return 0
             # Keep one browser/context alive; recoverable scan stalls are handled
             # inside Cleaner and must not turn into a five-minute inspection sleep.
@@ -110,6 +130,13 @@ def run(argv=None) -> int:
     finally:
         if browser is not None and not keep_browser_open:
             browser.close()
+        diagnostic.event(
+            "run_finished",
+            pid=os.getpid(),
+            browser_open=browser is not None and keep_browser_open,
+            pending_exists=pending.path.exists(),
+            checkpoint_exists=checkpoint.path.exists(),
+        )
 
 
 if __name__ == "__main__":
