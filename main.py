@@ -13,17 +13,20 @@ from googlephotos_cleaner.diagnostics import CheckpointStore, DiagnosticLog, Pen
 
 def configure_logging(log_file):
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[logging.StreamHandler(), logging.FileHandler(log_file)],
-    )
+    logger = logging.getLogger("googlephotos")
+    logger.setLevel(logging.INFO)
+    for handler in logger.handlers:
+        handler.close()
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.addHandler(logging.StreamHandler())
+    logger.addHandler(logging.FileHandler(log_file))
+    return logger
 
 
 def run(argv=None) -> int:
     args = parse_args(argv)
-    configure_logging(args.log_file)
-    logger = logging.getLogger("googlephotos")
+    logger = configure_logging(args.log_file)
     diagnostic = DiagnosticLog(args.log_file.with_name("run.jsonl"))
     checkpoint = CheckpointStore(args.checkpoint_file)
     pending = PendingActionStore(args.checkpoint_file.with_name("pending-action.json"))
@@ -57,6 +60,7 @@ def run(argv=None) -> int:
             pending_policy=args.pending_action,
             pending_timeout_ms=args.pending_timeout_ms,
         )
+        diagnostic.event("run_started", **process_context(), mode="dry-run" if args.dry_run else "delete")
         cleaner = Cleaner(
             browser,
             batch_size=args.selection_size if args.selection_size > 1 else args.batch_size,
@@ -94,6 +98,7 @@ def run(argv=None) -> int:
         )
         return 0
     except KeyboardInterrupt:
+        run_outcome = "interrupted"
         logger.warning("Interrupted by user")
         return 130
     except (CleanerError, OSError, RuntimeError) as exc:
@@ -134,7 +139,18 @@ def run(argv=None) -> int:
         return 1
     finally:
         if browser is not None and not keep_browser_open:
-            browser.close()
+            try:
+                browser.close()
+            except Exception as close_error:
+                run_outcome = "failed_close"
+                diagnostic.event(
+                    "browser_close_failed",
+                    "ERROR",
+                    error_type=type(close_error).__name__,
+                    error_message=str(close_error),
+                )
+        if run_outcome is None:
+            run_outcome = "finished"
         diagnostic.event(
             "run_finished",
             **process_context(),

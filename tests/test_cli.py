@@ -6,6 +6,64 @@ import unittest
 from googlephotos_cleaner.cli import build_parser, parse_args
 
 class MainFlowTests(unittest.TestCase):
+    def test_main_writes_one_public_terminal_lifecycle(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            def close(self):
+                pass
+
+        class Cleaner:
+            last_outcome = type("Outcome", (), {"value": "pass_done"})()
+            stop_requested = True
+            def __init__(self, *args, **kwargs):
+                pass
+            def run(self):
+                return 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()), patch.object(main, "Cleaner", Cleaner):
+                self.assertEqual(main.run(["--dry-run", "--max-batches", "1", "--log-file", str(log), "--profile-dir", str(Path(tmp) / "profile")]), 0)
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+
+        phases = [event["phase"] for event in events]
+        self.assertEqual(phases.count("run_started"), 1)
+        self.assertEqual(phases.count("cleaner_stopped"), 1)
+        self.assertEqual(phases.count("run_finished"), 1)
+        self.assertNotIn("cleaner_terminal_state", phases)
+
+    def test_main_writes_failed_terminal_lifecycle(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        class FailingBrowser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", side_effect=RuntimeError("boom")):
+                self.assertEqual(main.run(["--dry-run", "--log-file", str(log), "--profile-dir", str(Path(tmp) / "profile")]), 1)
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+
+        phases = [event["phase"] for event in events]
+        self.assertIn("run_failed", phases)
+        finished = next(event for event in events if event["phase"] == "run_finished")
+        self.assertEqual(finished["outcome"], "failed")
+        self.assertEqual(phases.count("run_finished"), 1)
+
     def test_main_uses_one_cleaner_pass(self):
         import main
         from unittest.mock import patch
