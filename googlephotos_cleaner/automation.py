@@ -248,6 +248,10 @@ class Cleaner:
                     batch=processed, photos=total_photos, state="running"
                 )
             self._event("checkpoint_saved", batch=processed, photos=total_photos)
+            if self.max_batches is not None and processed >= self.max_batches:
+                self.stop_requested = True
+                self._event("batch_limit", batches=processed, photos=total_photos)
+                return processed
 
         self._event("batch_limit", batches=processed, photos=total_photos)
         self.logger.info("Reached batch limit: %d", processed)
@@ -390,4 +394,8 @@ class Cleaner:
             if self.checkpoint:
                 self.checkpoint.save(batch=processed, photos=total_photos, state="running")
             self._event("day_checkpoint_saved", day=day, days=processed)
+            if self.max_batches is not None and processed >= self.max_batches:
+                self.stop_requested = True
+                self._event("batch_limit", batches=processed, photos=total_photos)
+                return processed
         return processed
