@@ -323,11 +323,34 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(browser.trashed, [])
             self.assertIsNotNone(pending.load())
 
+    def test_pending_present_target_never_retries_ambiguous_trash(self):
+        class RetrySpyBrowser(FakeBrowser):
+            def target_exists(self, _label):
+                return True
+
+            def retry_pending_action(self, _label):
+                raise AssertionError("ambiguous Trash must not be retried automatically")
+
+            def wait_for_target_absence(self, _label):
+                return False
+
+        browser = RetrySpyBrowser([])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending-action.json")
+            pending.save(label="Seleziona tutte le foto a partire da: 2 ago", kind="day", scroll_top=0)
+            processed = Cleaner(browser, day_mode=True, pending=pending).run()
+
+            self.assertEqual(processed, 0)
+            self.assertIsNotNone(pending.load())
+
     def test_pending_day_absent_after_single_click_is_completed_without_retry(self):
         class PendingThenAbsentBrowser(FakeBrowser):
             def delete_selected_day(self):
                 self.trashed.append(["day"])
                 return False
+
+            def wait_for_target_absence(self, _label):
+                return True
 
         browser = PendingThenAbsentBrowser([("2 Aug", 1)])
         with tempfile.TemporaryDirectory() as tmp:
@@ -340,16 +363,67 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(browser.trashed, [["day"]])
             self.assertIsNone(pending.load())
 
-    def test_reconciles_pending_target_absent_without_second_delete(self):
-        browser = FakeBrowser([])
+    def test_pending_target_absent_without_feedback_stays_unresolved(self):
+        class AbsentWithoutFeedbackBrowser(FakeBrowser):
+            def __init__(self):
+                super().__init__([])
+                self.wait_calls = 0
+
+            def target_exists(self, _label):
+                return False
+
+            def wait_for_target_absence(self, _label):
+                self.wait_calls += 1
+                return False
+
+        browser = AbsentWithoutFeedbackBrowser()
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending-action.json")
-            pending.save(label="Foto - 2 ago", kind="media", scroll_top=200)
+            pending.save(label="Foto - 2 ago", kind="day", scroll_top=200)
             processed = Cleaner(browser, day_mode=True, pending=pending, max_idle_scrolls=1).run()
 
             self.assertEqual(processed, 0)
-            self.assertIsNone(pending.load())
+            self.assertIsNotNone(pending.load())
+            self.assertEqual(browser.wait_calls, 1)
             self.assertEqual(browser.trashed, [])
+
+    def test_single_media_fallback_is_journaled_as_media_action(self):
+        class SingleMediaBrowser(FakeBrowser):
+            def select_current_day(self):
+                self.days.append("Foto - 2 ago")
+                self.last_selection_kind = "media"
+                return "Foto - 2 ago"
+
+            def delete_selected_day(self):
+                self.trashed.append(["media"])
+                return False
+
+            def wait_for_target_absence(self, _label):
+                return False
+
+        browser = SingleMediaBrowser([("Foto - 2 ago", 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending-action.json")
+            cleaner = Cleaner(browser, day_mode=True, pending=pending, max_batches=1)
+            cleaner.run()
+
+            self.assertEqual(browser.trashed, [["media"]])
+            self.assertEqual(pending.load()["kind"], "media")
+
+    def test_confirmed_day_action_resets_timeline_once(self):
+        class ResetTrackingBrowser(FakeBrowser):
+            def __init__(self):
+                super().__init__([("2 Aug", 1)])
+                self.reset_calls = 0
+
+            def reset_timeline_to_top(self):
+                self.reset_calls += 1
+
+        browser = ResetTrackingBrowser()
+        processed = Cleaner(browser, day_mode=True, max_idle_scrolls=1).run()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(browser.reset_calls, 1)
 
     def test_cleaner_handles_adjacent_days_without_timeline_reset(self):
         browser = FakeBrowser([("2 Aug", 3), ("1 Aug", 2)])

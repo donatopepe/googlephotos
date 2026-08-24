@@ -95,50 +95,77 @@ class Cleaner:
         self._event("authenticated")
         if self.pending:
             previous = self.pending.load()
+            if previous and previous.get("kind") == "media_batch":
+                if self.discard_ambiguous_media_batches:
+                    self.pending.clear()
+                    self._event(
+                        "pending_batch_discarded",
+                        "WARNING",
+                        target=previous["label"],
+                        count=previous.get("count"),
+                    )
+                    previous = None
+                else:
+                    self._event(
+                        "pending_batch_unresolved",
+                        "WARNING",
+                        target=previous["label"],
+                        count=previous.get("count"),
+                    )
+                    return 0
             if previous:
-                # A media batch has no stable single checkbox label to reconcile.
-                # Preserve its journal and block all later destructive work rather
-                # than mistaking a virtualized DOM disappearance for completion.
-                if previous.get("kind") == "media_batch":
-                    if self.discard_ambiguous_media_batches:
-                        self.pending.clear()
-                        self._event(
-                            "pending_batch_discarded",
-                            "WARNING",
-                            target=previous["label"],
-                            count=previous.get("count"),
-                        )
-                    else:
-                        self._event(
-                            "pending_batch_unresolved",
-                            "WARNING",
-                            target=previous["label"],
-                            count=previous.get("count"),
-                        )
-                        return 0
                 target_exists = getattr(self.browser, "target_exists", None)
                 retry_pending = getattr(self.browser, "retry_pending_action", None)
                 if target_exists is None:
                     raise CleanerError("Pending action cannot be reconciled")
                 if not target_exists(previous["label"]):
-                    self.pending.clear()
-                    self._event("pending_reconciled", target=previous["label"], result="absent")
-                elif retry_pending is not None:
-                    # User-authorized after restart: click this exact pending target
-                    # once more, then require positive completion feedback.
-                    self._event("pending_retry_started", target=previous["label"])
-                    if retry_pending(previous["label"]):
+                    wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
+                    target_absent = (
+                        wait_for_absence(previous["label"])
+                        if wait_for_absence is not None
+                        else False
+                    )
+                    if target_absent:
                         self.pending.clear()
-                        self._event("pending_retry_completed", target=previous["label"])
+                        self._event("pending_reconciled", target=previous["label"], result="absent")
                     else:
-                        self._event("pending_retry_unresolved", "WARNING", target=previous["label"])
+                        self._event(
+                            "pending_unresolved",
+                            "WARNING",
+                            target=previous["label"],
+                            result="absent_without_feedback",
+                        )
+                        return 0
+                elif retry_pending is not None:
+                    # A prior destructive result is ambiguous. Do not click Trash
+                    # again; wait only for positive feedback from the original action.
+                    wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
+                    target_absent = (
+                        wait_for_absence(previous["label"])
+                        if wait_for_absence is not None
+                        else False
+                    )
+                    if target_absent:
+                        self.pending.clear()
+                        self._event(
+                            "pending_reconciled",
+                            target=previous["label"],
+                            result="present_after_wait",
+                        )
+                    else:
+                        self._event(
+                            "pending_unresolved",
+                            "WARNING",
+                            target=previous["label"],
+                            result="present_without_feedback",
+                        )
                         return 0
                 else:
                     wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
                     target_absent = (
                         wait_for_absence(previous["label"])
                         if wait_for_absence is not None
-                        else not target_exists(previous["label"])
+                        else False
                     )
                     if target_absent:
                         self.pending.clear()
@@ -294,7 +321,8 @@ class Cleaner:
                 self._event("day_trash_started", day=day)
                 try:
                     if self.pending:
-                        self.pending.save(label=day, kind="day", scroll_top=0)
+                        target_kind = "media" if getattr(self.browser, "last_selection_kind", "day") == "media" else "day"
+                        self.pending.save(label=day, kind=target_kind, scroll_top=0)
                     completed = self.browser.delete_selected_day()
                     if completed is False:
                         self._event("day_trash_pending", "WARNING", day=day)
