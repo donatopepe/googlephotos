@@ -76,6 +76,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         browser.page = page
 
         self.assertIs(browser._first_viewport_control(("[role=checkbox]",)), second)
+        self.assertEqual(browser.last_locator_selector, "[role=checkbox]")
         self.assertEqual(page.mouse.move.call_count, 2)
         first.hover.assert_not_called()
         second.hover.assert_not_called()

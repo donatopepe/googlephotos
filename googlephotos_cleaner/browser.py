@@ -217,6 +217,7 @@ class PlaywrightBrowser:
         """
         viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
         visible: list[tuple[float, float, object]] = []
+        self.last_locator_selector = None
         for selector in selectors:
             locator = self.page.locator(selector)
             for index in range(locator.count()):
@@ -259,6 +260,7 @@ class PlaywrightBrowser:
                     except Exception:
                         continue
                 if box is not None and box["width"] > 0 and box["height"] > 0:
+                    self.last_locator_selector = selector
                     visible.append((parent_box["y"], parent_box["x"], candidate))
         return min(visible, default=None, key=lambda item: (item[0], item[1]))[2] if visible else None
 
