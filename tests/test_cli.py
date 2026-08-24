@@ -22,6 +22,8 @@ class CliTests(unittest.TestCase):
         self.assertFalse(args.media_first)
         self.assertEqual(args.scroll_step, 240)
         self.assertEqual(args.scroll_delay_ms, 1500)
+        self.assertEqual(args.pending_action, "block")
+        self.assertEqual(args.pending_timeout_ms, 30000)
 
     def test_parser_supports_dry_run_and_batch_limit(self):
         args = parse_args(
@@ -60,6 +62,11 @@ class CliTests(unittest.TestCase):
         args = parse_args(["--scroll-step", "180", "--scroll-delay-ms", "2000"])
         self.assertEqual(args.scroll_step, 180)
         self.assertEqual(args.scroll_delay_ms, 2000)
+
+    def test_parser_supports_pending_policies(self):
+        args = parse_args(["--pending-action", "inspect", "--pending-timeout-ms", "5000"])
+        self.assertEqual(args.pending_action, "inspect")
+        self.assertEqual(args.pending_timeout_ms, 5000)
 
     def test_parser_supports_idle_scroll_limit(self):
         args = parse_args(["--max-idle-scrolls", "7"])

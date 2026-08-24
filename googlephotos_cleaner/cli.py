@@ -108,6 +108,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=1500,
         help="wait after each timeline scroll in milliseconds (default: 1500)",
     )
+    parser.add_argument(
+        "--pending-action",
+        choices=("block", "inspect", "discard"),
+        default="block",
+        help="policy for existing pending Trash action (default: block)",
+    )
+    parser.add_argument(
+        "--pending-timeout-ms",
+        type=_positive_int,
+        default=30000,
+        help="bounded pending reconciliation timeout in milliseconds (default: 30000)",
+    )
     return parser
 
 

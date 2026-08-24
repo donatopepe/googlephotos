@@ -55,7 +55,9 @@ def run(argv=None) -> int:
             reset_timeline_after_action=True,
             # User authorized discarding ambiguous media batch journals instead
             # of retrying their Trash action after a restart.
-            discard_ambiguous_media_batches=True,
+            discard_ambiguous_media_batches=args.pending_action == "discard",
+            pending_policy=args.pending_action,
+            pending_timeout_ms=args.pending_timeout_ms,
         )
         # Cleaner can stop a pass for idle DOM or a journaled pending action.
         # Keep same visible browser/context and start a fresh reconciliation pass;
