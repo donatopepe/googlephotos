@@ -216,7 +216,7 @@ class PlaywrightBrowser:
         into view.
         """
         viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
-        visible: list[tuple[float, float, object]] = []
+        visible: list[tuple[float, float, str, object]] = []
         self.last_locator_selector = None
         for selector in selectors:
             locator = self.page.locator(selector)
@@ -260,9 +260,12 @@ class PlaywrightBrowser:
                     except Exception:
                         continue
                 if box is not None and box["width"] > 0 and box["height"] > 0:
-                    self.last_locator_selector = selector
-                    visible.append((parent_box["y"], parent_box["x"], candidate))
-        return min(visible, default=None, key=lambda item: (item[0], item[1]))[2] if visible else None
+                    visible.append((parent_box["y"], parent_box["x"], selector, candidate))
+        if not visible:
+            return None
+        selected = min(visible, key=lambda item: (item[0], item[1]))
+        self.last_locator_selector = selected[2]
+        return selected[3]
 
     def _day_locator(self):
         return self._first_viewport_control(self.DAY_SELECTORS)
@@ -307,7 +310,7 @@ class PlaywrightBrowser:
         verified = after == "true"
         self._log_selection(
             kind="day",
-            selector="DAY_SELECTORS",
+            selector=getattr(self, "last_locator_selector", "DAY_SELECTORS"),
             label=label,
             before=before,
             after=after,
@@ -343,7 +346,7 @@ class PlaywrightBrowser:
         verified = self.page.locator('[role="checkbox"][aria-checked="true"]').count() > 0
         self._log_selection(
             kind="media",
-            selector="SINGLE_MEDIA_SELECTORS",
+            selector=getattr(self, "last_locator_selector", "SINGLE_MEDIA_SELECTORS"),
             label=label,
             before=before,
             after=after,
@@ -427,7 +430,8 @@ class PlaywrightBrowser:
                     "media_selection_attempt",
                     kind="media",
                     selector="MEDIA_SELECTORS",
-                    media_id=media_id,
+                    media_index=index,
+                    has_media_id=bool(media_id),
                     aria_checked_before=aria_before,
                     aria_checked_after=aria_after,
                     selected_before=selected_before,
