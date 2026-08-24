@@ -23,8 +23,9 @@ class MainFlowTests(unittest.TestCase):
             last_outcome = type("Outcome", (), {"value": "pass_done"})()
             stop_requested = True
             def __init__(self, *args, **kwargs):
-                pass
+                self.diagnostic = kwargs["diagnostic"]
             def run(self):
+                self.diagnostic.event("run_started", mode="dry-run")
                 return 1
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,6 +124,36 @@ class MainFlowTests(unittest.TestCase):
         self.assertIn("browser_open", finished)
         self.assertIn("profile_dir", finished)
         self.assertEqual(phases.count("run_finished"), 1)
+
+    def test_main_and_cleaner_emit_one_run_started(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            def close(self):
+                pass
+
+        class Cleaner:
+            last_outcome = type("Outcome", (), {"value": "pass_done"})()
+            stop_requested = True
+            def __init__(self, *args, **kwargs):
+                self.diagnostic = kwargs["diagnostic"]
+            def run(self):
+                self.diagnostic.event("run_started", mode="dry-run")
+                return 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()), patch.object(main, "Cleaner", Cleaner):
+                main.run(["--dry-run", "--max-batches", "1", "--log-file", str(log), "--profile-dir", str(Path(tmp) / "profile")])
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+
+        self.assertEqual(sum(event["phase"] == "run_started" for event in events), 1)
 
     def test_main_uses_one_cleaner_pass(self):
         import main

@@ -79,7 +79,13 @@ def run(argv=None) -> int:
             pending_policy=args.pending_action,
             pending_timeout_ms=args.pending_timeout_ms,
         )
-        diagnostic.event("run_started", **process_context(), mode="dry-run" if args.dry_run else "delete")
+        diagnostic.event(
+            "run_configured",
+            **process_context(),
+            mode="dry-run" if args.dry_run else "delete",
+            pending_policy=args.pending_action,
+            pending_timeout_ms=args.pending_timeout_ms,
+        )
         cleaner = Cleaner(
             browser,
             batch_size=args.selection_size if args.selection_size > 1 else args.batch_size,
