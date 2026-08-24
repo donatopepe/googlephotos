@@ -82,6 +82,26 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         second.hover.assert_not_called()
         hidden.hover.assert_not_called()
 
+    def test_day_selection_rechecks_materialized_control_before_click(self):
+        first = Mock()
+        second = Mock()
+        first.get_attribute.side_effect = ["Seleziona tutte le foto a partire da: dom 2 ago", "false"]
+        second.get_attribute.side_effect = lambda name: (
+            "Seleziona tutte le foto a partire da: dom 2 ago"
+            if name == "aria-label" else ("true" if second.click.call_count else "false")
+        )
+        page = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = None
+        browser._day_locator = Mock(side_effect=[first, second, second])
+
+        result = browser.select_current_day()
+
+        self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
+        first.click.assert_not_called()
+        second.click.assert_called_once_with()
+
     def test_day_selection_clicks_and_verifies_current_day_control(self):
         control = Mock()
         control.get_attribute.side_effect = ["Seleziona tutte le foto a partire da: dom 2 ago", "true"]
@@ -95,6 +115,52 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
         control.click.assert_called_once_with()
+
+    def test_first_viewport_control_retries_after_pointer_materialization(self):
+        control = Mock()
+        parent = Mock()
+        control.locator.return_value = parent
+        parent.bounding_box.return_value = {"x": 10, "y": 100, "width": 960, "height": 48}
+        control.bounding_box.side_effect = [None, {"x": 10, "y": 100, "width": 24, "height": 24}]
+        locator = Mock()
+        locator.count.return_value = 1
+        locator.nth.return_value = control
+        page = Mock()
+        page.evaluate.return_value = {"width": 1000, "height": 600}
+        page.locator.return_value = locator
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = None
+
+        result = browser._first_viewport_control(("[role=checkbox]",))
+
+        self.assertIs(result, control)
+        self.assertEqual(page.mouse.move.call_count, 1)
+        self.assertEqual(control.bounding_box.call_count, 2)
+
+    def test_first_viewport_control_logs_hidden_candidates(self):
+        control = Mock()
+        parent = Mock()
+        control.locator.return_value = parent
+        parent.bounding_box.return_value = {"x": 10, "y": 100, "width": 960, "height": 48}
+        control.bounding_box.return_value = None
+        locator = Mock()
+        locator.count.return_value = 1
+        locator.nth.return_value = control
+        page = Mock()
+        page.evaluate.return_value = {"width": 1000, "height": 600}
+        page.locator.return_value = locator
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertIsNone(browser._first_viewport_control(("[role=checkbox]",)))
+
+        event = diagnostic.event.call_args
+        self.assertEqual(event.args[0], "control_materialization")
+        self.assertEqual(event.kwargs["candidate_count"], 1)
+        self.assertEqual(event.kwargs["visible_count"], 0)
 
     def test_day_locator_reveals_zero_width_checkbox_from_visible_day_row(self):
         control = Mock()
@@ -131,13 +197,13 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
         browser.diagnostic = None
-        browser._day_locator = Mock(side_effect=[stale, fresh])
+        browser._day_locator = Mock(side_effect=[stale, fresh, fresh])
 
         result = browser.select_current_day()
 
         self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
-        stale.click.assert_called_once_with()
-        fresh.click.assert_not_called()
+        stale.click.assert_not_called()
+        fresh.click.assert_called_once_with()
 
     def test_day_selection_never_falls_back_to_single_media_after_day_control_found(self):
         control = Mock()

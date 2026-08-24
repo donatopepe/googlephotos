@@ -86,7 +86,14 @@ class PlaywrightBrowser:
                 "Playwright missing. Install requirements.txt first."
             ) from exc
 
-        self._playwright = sync_playwright().start()
+        self._playwright = None
+        self.context = None
+        self.page = None
+        try:
+            self._playwright = sync_playwright().start()
+        except Exception:
+            self.profile_lock.release()
+            raise
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "browser_launch_started",
@@ -113,8 +120,11 @@ class PlaywrightBrowser:
                     profile_lock_owned=self.profile_lock.acquired,
                     recovery="playwright_stopped_lock_released",
                 )
-            self._playwright.stop()
-            self.profile_lock.release()
+            try:
+                self._playwright.stop()
+            finally:
+                self._playwright = None
+                self.profile_lock.release()
             raise
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.page.goto(self.LOGIN_URL, wait_until="domcontentloaded")
@@ -218,10 +228,13 @@ class PlaywrightBrowser:
         """
         viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
         visible: list[tuple[float, float, str, object]] = []
+        candidate_count = 0
         self.last_locator_selector = None
         for selector in selectors:
             locator = self.page.locator(selector)
-            for index in range(locator.count()):
+            selector_count = locator.count()
+            candidate_count += selector_count
+            for index in range(selector_count):
                 candidate = locator.nth(index)
                 parent_box = None
                 # Checkbox wrapper itself may be zero-size. Find first visible
@@ -262,6 +275,15 @@ class PlaywrightBrowser:
                         continue
                 if box is not None and box["width"] > 0 and box["height"] > 0:
                     visible.append((parent_box["y"], parent_box["x"], selector, candidate))
+        if getattr(self, "diagnostic", None) is not None:
+            self.diagnostic.event(
+                "control_materialization",
+                candidate_count=candidate_count,
+                visible_count=len(visible),
+                selector_count=len(selectors),
+                viewport=viewport,
+                pointer_moves=len(visible),
+            )
         if not visible:
             return None
         selected = min(visible, key=lambda item: (item[0], item[1]))
@@ -297,11 +319,21 @@ class PlaywrightBrowser:
             return media
         label = control.get_attribute("aria-label") or "unknown-day"
         before = control.get_attribute("aria-checked")
+        # Re-resolve after pointer materialization. Virtualized rows can expose
+        # a stale hidden node first; never click a locator that is not visible.
+        materialized = self._day_locator()
+        if materialized is not None and materialized is not control:
+            control = materialized
+            label = control.get_attribute("aria-label") or label
+            before = control.get_attribute("aria-checked")
         control.click()
         self.page.wait_for_timeout(150)
         # Google Photos may replace virtualized checkbox node after click. Read
         # fresh visible control rather than trusting stale locator state.
-        current = self._day_locator()
+        try:
+            current = self._day_locator()
+        except (StopIteration, IndexError):
+            current = None
         try:
             after = current.get_attribute("aria-checked") if current is not None else None
         except (StopIteration, IndexError):
@@ -697,8 +729,10 @@ class PlaywrightBrowser:
     def close(self) -> None:
         close_error = None
         try:
-            self.context.close()
-            self._playwright.stop()
+            if self.context is not None:
+                self.context.close()
+            if self._playwright is not None:
+                self._playwright.stop()
         except Exception as exc:
             close_error = exc
         finally:
