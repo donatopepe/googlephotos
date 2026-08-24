@@ -419,6 +419,25 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(cleaner.last_outcome, PassOutcome.PENDING_UNRESOLVED)
             self.assertIsNotNone(pending.load())
 
+    def test_discard_policy_clears_pending_day_and_continues(self):
+        browser = FakeBrowser([("2 Aug", 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending-action.json")
+            pending.save(label="Seleziona tutte le foto a partire da: 2 ago", kind="day", scroll_top=0)
+            cleaner = Cleaner(
+                browser,
+                day_mode=True,
+                pending=pending,
+                pending_policy="discard",
+                max_batches=1,
+                dry_run=True,
+            )
+
+            self.assertEqual(cleaner.run(), 1)
+            self.assertIsNone(pending.load())
+            self.assertEqual(browser.days, ["2 Aug"])
+            self.assertEqual(cleaner.last_outcome, PassOutcome.PASS_DONE)
+
     def test_block_pending_does_not_poll_browser(self):
         class PollSpyBrowser(FakeBrowser):
             def wait_for_target_absence(self, _label):
