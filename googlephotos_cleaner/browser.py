@@ -576,8 +576,20 @@ class PlaywrightBrowser:
             "Moved to bin",
         )
         for text in feedback:
-            feedback_locator = self.page.get_by_text(text, exact=False)
-            count = feedback_locator.count()
+            try:
+                feedback_locator = self.page.get_by_text(text, exact=False)
+                count = feedback_locator.count()
+            except Exception as exc:
+                if getattr(self, "diagnostic", None) is not None:
+                    self.diagnostic.event(
+                        "trash_feedback_check_failed",
+                        "ERROR",
+                        feedback_category=text,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        positive_feedback=False,
+                    )
+                return False
             if getattr(self, "diagnostic", None) is not None:
                 self.diagnostic.event(
                     "trash_feedback_candidate",
@@ -590,6 +602,17 @@ class PlaywrightBrowser:
                         return True
                 except (AttributeError, TypeError):
                     return True
+                except Exception as exc:
+                    if getattr(self, "diagnostic", None) is not None:
+                        self.diagnostic.event(
+                            "trash_feedback_check_failed",
+                            "ERROR",
+                            feedback_category=text,
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
+                            positive_feedback=False,
+                        )
+                    return False
         return False
 
     def wait_for_target_absence(self, label: str, timeout_ms: int = 30000) -> bool:
