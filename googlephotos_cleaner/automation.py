@@ -135,6 +135,7 @@ class Cleaner:
                             target=previous["label"],
                             result="absent_without_feedback",
                         )
+                        self.stop_requested = True
                         return 0
                 elif retry_pending is not None:
                     # A prior destructive result is ambiguous. Do not click Trash
@@ -159,6 +160,7 @@ class Cleaner:
                             target=previous["label"],
                             result="present_without_feedback",
                         )
+                        self.stop_requested = True
                         return 0
                 else:
                     wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
@@ -230,6 +232,7 @@ class Cleaner:
                         self.checkpoint.save(
                             batch=processed, photos=total_photos, state="ambiguous"
                         )
+                    self.stop_requested = True
                     raise DestructiveActionAmbiguous(
                         "Trash result is ambiguous; refusing destructive retry"
                     ) from exc
@@ -356,6 +359,7 @@ class Cleaner:
                                     batch=processed, photos=total_photos, state="pending"
                                 )
                             self._event("day_trash_unresolved", "WARNING", day=day)
+                            self.stop_requested = True
                             return processed
                         continue
                     if self.pending:
@@ -374,6 +378,7 @@ class Cleaner:
                     self.logger.warning(
                         "Trash result pending for %s; will reconcile before another click", day
                     )
+                    self.stop_requested = True
                     return processed
                 self._event("day_trash_completed", day=day)
                 self.logger.info("Moved day %s to Trash", day)

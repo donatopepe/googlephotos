@@ -200,8 +200,10 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")
             browser = AmbiguousBatchBrowser([["photo-1", "photo-2"]])
+            cleaner = Cleaner(browser, day_mode=False, pending=pending)
             with self.assertRaises(DestructiveActionAmbiguous):
-                Cleaner(browser, day_mode=False, pending=pending).run()
+                cleaner.run()
+            self.assertTrue(cleaner.stop_requested)
             record = pending.load()
             self.assertEqual(record["kind"], "media_batch")
             self.assertEqual(record["count"], 2)
@@ -323,6 +325,23 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(browser.trashed, [])
             self.assertIsNotNone(pending.load())
 
+    def test_pending_present_target_without_feedback_stops_pass(self):
+        class PresentWithoutFeedbackBrowser(FakeBrowser):
+            def target_exists(self, _label):
+                return True
+
+            def wait_for_target_absence(self, _label):
+                return False
+
+        browser = PresentWithoutFeedbackBrowser([])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending-action.json")
+            pending.save(label="Seleziona tutte le foto a partire da: 2 ago", kind="day", scroll_top=0)
+            cleaner = Cleaner(browser, day_mode=True, pending=pending).run()
+
+            self.assertEqual(cleaner, 0)
+            self.assertIsNotNone(pending.load())
+
     def test_pending_present_target_never_retries_ambiguous_trash(self):
         class RetrySpyBrowser(FakeBrowser):
             def target_exists(self, _label):
@@ -380,12 +399,14 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending-action.json")
             pending.save(label="Foto - 2 ago", kind="day", scroll_top=200)
-            processed = Cleaner(browser, day_mode=True, pending=pending, max_idle_scrolls=1).run()
+            cleaner = Cleaner(browser, day_mode=True, pending=pending, max_idle_scrolls=1)
+            processed = cleaner.run()
 
             self.assertEqual(processed, 0)
             self.assertIsNotNone(pending.load())
             self.assertEqual(browser.wait_calls, 1)
             self.assertEqual(browser.trashed, [])
+            self.assertTrue(cleaner.stop_requested)
 
     def test_single_media_fallback_is_journaled_as_media_action(self):
         class SingleMediaBrowser(FakeBrowser):
@@ -409,6 +430,22 @@ class BrowserAdapterTests(unittest.TestCase):
 
             self.assertEqual(browser.trashed, [["media"]])
             self.assertEqual(pending.load()["kind"], "media")
+
+    def test_confirmed_day_action_resets_timeline_once(self):
+        class UnresolvedDayBrowser(FakeBrowser):
+            def delete_selected_day(self):
+                self.trashed.append(["day"])
+                return False
+
+            def wait_for_target_absence(self, _label):
+                return False
+
+        browser = UnresolvedDayBrowser([("2 Aug", 1)])
+        cleaner = Cleaner(browser, day_mode=True, max_idle_scrolls=1)
+        cleaner.run()
+
+        self.assertTrue(cleaner.stop_requested)
+        self.assertEqual(browser.trashed, [["day"]])
 
     def test_confirmed_day_action_resets_timeline_once(self):
         class ResetTrackingBrowser(FakeBrowser):
