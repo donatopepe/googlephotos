@@ -683,7 +683,7 @@ class PlaywrightBrowser:
             if selected_before > 0 and selected.count() == 0:
                 # Virtualized DOM can drop selected nodes during a refresh. Only
                 # confirm success when Google Photos also exposes positive feedback.
-                feedback = self._trash_feedback_visible()
+                feedback = self._wait_for_trash_feedback()
                 if getattr(self, "diagnostic", None) is not None:
                     self.diagnostic.event(
                         "trash_feedback_checked",
@@ -718,7 +718,7 @@ class PlaywrightBrowser:
         confirmation.click()
         self.page.wait_for_timeout(1000)
         selected_after = selected.count()
-        feedback = self._trash_feedback_visible()
+        feedback = self._wait_for_trash_feedback()
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "trash_confirmation_completed",

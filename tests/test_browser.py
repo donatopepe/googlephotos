@@ -768,6 +768,22 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertFalse(browser.delete_selected_day())
 
+    def test_delete_selected_day_accepts_feedback_after_polling(self):
+        page = Mock()
+        action = Mock()
+        action.count.return_value = 1
+        action.first = action
+        action.first.is_visible.return_value = True
+        page.get_by_role.return_value = action
+        page.get_by_text.return_value.count.side_effect = [0] * 20 + [1]
+        selected = Mock()
+        selected.count.side_effect = [1] + [0] * 10
+        page.locator.return_value = selected
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertTrue(browser.delete_selected_day())
+
     def test_delete_selected_day_accepts_positive_feedback(self):
         page = Mock()
         action = Mock()
