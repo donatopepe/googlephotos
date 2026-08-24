@@ -1148,6 +1148,24 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertFalse(browser._trash_feedback_visible())
         self.assertIsNone(browser.last_feedback_source)
 
+    def test_final_trash_feedback_poll_logs_final_check_count(self):
+        from unittest.mock import patch
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 0
+        page.get_by_text.return_value = feedback
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        with patch("googlephotos_cleaner.browser.time.monotonic", side_effect=[0, 10]):
+            self.assertFalse(browser._wait_for_trash_feedback(timeout_ms=5000))
+
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_check" and call.kwargs.get("final"))
+        self.assertEqual(event.kwargs["check"], 1)
+        self.assertIsNone(event.kwargs["feedback_source"])
+
     def test_final_trash_feedback_poll_logs_source(self):
         from unittest.mock import patch
         page = Mock()
