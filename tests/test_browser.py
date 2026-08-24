@@ -727,6 +727,32 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         action.click.assert_called_once_with()
 
+    def test_delete_selected_day_ignores_hidden_trash_button(self):
+        page = Mock()
+        hidden = Mock()
+        visible = Mock()
+        hidden.count.return_value = 1
+        hidden.first = hidden
+        hidden.first.is_visible.return_value = False
+        visible.count.return_value = 1
+        visible.first = visible
+        visible.first.is_visible.return_value = True
+        absent = Mock()
+        absent.count.return_value = 0
+        dialog = Mock()
+        dialog.count.return_value = 0
+        dialog.get_by_role.return_value.count.return_value = 0
+        page.get_by_role.side_effect = [hidden, visible, absent, absent, dialog]
+        selected = Mock()
+        selected.count.return_value = 0
+        page.locator.return_value = selected
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertFalse(browser.delete_selected_day())
+        hidden.click.assert_not_called()
+        visible.click.assert_called_once_with()
+
     def test_delete_selected_day_requires_positive_feedback_after_dom_disappears(self):
         page = Mock()
         action = Mock()
@@ -780,6 +806,31 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         action.click.assert_called_once_with()
         confirmation.click.assert_called_once_with()
+
+    def test_move_to_trash_ignores_hidden_action_button(self):
+        page = Mock()
+        hidden = Mock()
+        visible = Mock()
+        hidden.count.return_value = 1
+        hidden.first = hidden
+        hidden.first.is_visible.return_value = False
+        visible.count.return_value = 1
+        visible.first = visible
+        visible.first.is_visible.return_value = True
+        confirmation = Mock()
+        confirmation.count.return_value = 0
+        feedback = Mock()
+        feedback.count.return_value = 0
+        page.get_by_role.side_effect = [hidden, visible, confirmation, confirmation]
+        page.get_by_text.return_value = feedback
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        with self.assertRaises(CleanerError):
+            browser.move_selected_to_trash(["photo-1"])
+
+        hidden.click.assert_not_called()
+        visible.click.assert_called_once_with()
 
     def test_move_to_trash_requires_and_clicks_confirmation(self):
         page = Mock()

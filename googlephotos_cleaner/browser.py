@@ -607,6 +607,38 @@ class PlaywrightBrowser:
         target.first.click()
         return self.delete_selected_day()
 
+    def _visible_first(self, locator):
+        """Return first visible locator without forcing or scrolling it."""
+        count = locator.count()
+        for index in range(count):
+            candidate = locator.first if index == 0 else locator.nth(index)
+            try:
+                visible = candidate.is_visible()
+            except (AttributeError, TypeError):
+                box = candidate.bounding_box()
+                visible = box is not None and box["width"] > 0 and box["height"] > 0
+            if visible:
+                return candidate
+        return None
+
+    def _wait_for_trash_feedback(self, timeout_ms: int = 5000) -> bool:
+        deadline = time.monotonic() + timeout_ms / 1000
+        checks = 0
+        while time.monotonic() < deadline:
+            checks += 1
+            feedback = self._trash_feedback_visible()
+            if getattr(self, "diagnostic", None) is not None:
+                self.diagnostic.event(
+                    "trash_feedback_check",
+                    timeout_ms=timeout_ms,
+                    check=checks,
+                    positive_feedback=feedback,
+                )
+            if feedback:
+                return True
+            self.page.wait_for_timeout(250)
+        return self._trash_feedback_visible()
+
     def delete_selected_day(self) -> bool:
         trash_names = (
             "Move to trash",
@@ -616,11 +648,14 @@ class PlaywrightBrowser:
         )
         trash = None
         button_counts = {}
+        visible_button_counts = {}
         for name in trash_names:
             candidate = self.page.get_by_role("button", name=name, exact=True)
             button_counts[name] = candidate.count()
-            if button_counts[name] > 0:
-                trash = candidate.first
+            visible_candidate = self._visible_first(candidate) if button_counts[name] else None
+            visible_button_counts[name] = 1 if visible_candidate is not None else 0
+            if visible_candidate is not None:
+                trash = visible_candidate
                 break
         selected = self.page.locator('[role="checkbox"][aria-checked="true"]')
         selected_before = selected.count()
@@ -630,6 +665,7 @@ class PlaywrightBrowser:
                 target_kind=getattr(self, "last_selection_kind", "unknown"),
                 selected_before=selected_before,
                 action_button_counts=button_counts,
+                visible_action_button_counts=visible_button_counts,
                 confirmation_required=None,
                 result="started",
             )
@@ -674,8 +710,8 @@ class PlaywrightBrowser:
         confirmation = None
         for name in trash_names:
             candidate = dialog.get_by_role("button", name=name, exact=True)
-            if candidate.count() > 0:
-                confirmation = candidate.first
+            confirmation = self._visible_first(candidate) if candidate.count() else None
+            if confirmation is not None:
                 break
         if confirmation is None:
             raise CleanerError("Delete confirmation button not found")
@@ -699,21 +735,31 @@ class PlaywrightBrowser:
             raise CleanerError("Refusing to trash an empty selection")
 
         button_counts = {}
+        visible_button_counts = {}
         trash = self.page.get_by_role("button", name="Move to trash")
         button_counts["Move to trash"] = trash.count()
-        if button_counts["Move to trash"] == 0:
+        visible_trash = self._visible_first(trash) if button_counts["Move to trash"] else None
+        visible_button_counts["Move to trash"] = 1 if visible_trash is not None else 0
+        if visible_trash is not None:
+            trash = visible_trash
+        else:
             trash = self.page.get_by_role("button", name="Sposta nel cestino")
             button_counts["Sposta nel cestino"] = trash.count()
+            visible_trash = self._visible_first(trash) if button_counts["Sposta nel cestino"] else None
+            visible_button_counts["Sposta nel cestino"] = 1 if visible_trash is not None else 0
+            if visible_trash is not None:
+                trash = visible_trash
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "trash_batch_click_started",
                 selected_count=len(media_ids),
                 action_button_counts=button_counts,
+                visible_action_button_counts=visible_button_counts,
                 result="started",
             )
-        if trash.count() == 0:
-            raise CleanerError("Trash action not found; refusing blind click")
-        trash.first.click()
+        if visible_trash is None:
+            raise CleanerError("Trash action not found visibly; refusing blind click")
+        trash.click()
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event("trash_batch_click_completed", result="clicked")
         self.page.wait_for_timeout(500)
@@ -735,7 +781,7 @@ class PlaywrightBrowser:
             raise CleanerError("Trash confirmation not found; result is ambiguous")
         confirmation.last.click()
         self.page.wait_for_timeout(1000)
-        feedback = self._trash_feedback_visible()
+        feedback = self._wait_for_trash_feedback()
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "trash_batch_feedback_checked",
