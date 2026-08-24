@@ -24,6 +24,20 @@ def configure_logging(log_file):
     return logger
 
 
+def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pending, checkpoint):
+    diagnostic.event(
+        "cleaner_stopped",
+        "WARNING" if stop_requested or outcome in {"failed", "interrupted", "failed_close"} else "INFO",
+        outcome=outcome,
+        stop_requested=stop_requested,
+        processed=processed,
+        pending_path=str(pending.path),
+        pending_exists=pending.path.exists(),
+        checkpoint_path=str(checkpoint.path),
+        checkpoint_exists=checkpoint.path.exists(),
+    )
+
+
 def run(argv=None) -> int:
     args = parse_args(argv)
     logger = configure_logging(args.log_file)
@@ -87,15 +101,6 @@ def run(argv=None) -> int:
         # recovery and terminal stop; never re-enter pass loop.
         processed = cleaner.run()
         run_outcome = cleaner.last_outcome.value
-        diagnostic.event(
-            "cleaner_stopped",
-            "WARNING" if cleaner.stop_requested else "INFO",
-            outcome=run_outcome,
-            stop_requested=cleaner.stop_requested,
-            processed=processed,
-            pending_exists=pending.path.exists(),
-            checkpoint_exists=checkpoint.path.exists(),
-        )
         return 0
     except KeyboardInterrupt:
         run_outcome = "interrupted"
@@ -151,6 +156,14 @@ def run(argv=None) -> int:
                 )
         if run_outcome is None:
             run_outcome = "finished"
+        emit_terminal_summary(
+            diagnostic,
+            outcome=run_outcome,
+            stop_requested=run_outcome in {"failed", "interrupted", "failed_close"},
+            processed=processed,
+            pending=pending,
+            checkpoint=checkpoint,
+        )
         diagnostic.event(
             "run_finished",
             **process_context(),

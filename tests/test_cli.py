@@ -39,6 +39,20 @@ class MainFlowTests(unittest.TestCase):
         self.assertEqual(phases.count("run_finished"), 1)
         self.assertNotIn("cleaner_terminal_state", phases)
 
+    def test_main_writes_finished_outcome_on_keyboard_interrupt(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", side_effect=KeyboardInterrupt()):
+                self.assertEqual(main.run(["--dry-run", "--log-file", str(log), "--profile-dir", str(Path(tmp) / "profile")]), 130)
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+
+        finished = next(event for event in events if event["phase"] == "run_finished")
+        self.assertEqual(finished["outcome"], "interrupted")
+
     def test_main_writes_failed_terminal_lifecycle(self):
         import json
         import main
@@ -60,6 +74,7 @@ class MainFlowTests(unittest.TestCase):
 
         phases = [event["phase"] for event in events]
         self.assertIn("run_failed", phases)
+        self.assertEqual(phases.count("cleaner_stopped"), 1)
         finished = next(event for event in events if event["phase"] == "run_finished")
         self.assertEqual(finished["outcome"], "failed")
         self.assertEqual(phases.count("run_finished"), 1)
