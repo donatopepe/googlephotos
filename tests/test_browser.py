@@ -938,6 +938,33 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         hidden.click.assert_not_called()
         visible.click.assert_called_once_with()
 
+    def test_move_to_trash_feedback_event_includes_source(self):
+        page = Mock()
+        trash = Mock()
+        confirmation = Mock()
+        trash.count.return_value = 1
+        trash.first = trash
+        trash.first.is_visible.return_value = True
+        confirmation.count.return_value = 1
+        confirmation.first = confirmation
+        confirmation.last = confirmation
+        confirmation.first.is_visible.return_value = True
+        page.get_by_role.side_effect = [trash, confirmation]
+        feedback = Mock()
+        feedback.count.return_value = 1
+        feedback.first = feedback
+        feedback.first.is_visible.return_value = True
+        page.get_by_text.return_value = feedback
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        browser.move_selected_to_trash(["photo-1"])
+
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_batch_feedback_checked")
+        self.assertEqual(event.kwargs["feedback_source"], "browser_positive_feedback")
+
     def test_move_to_trash_requires_and_clicks_confirmation(self):
         page = Mock()
         trash = Mock()
