@@ -596,6 +596,7 @@ class PlaywrightBrowser:
                     "trash_feedback_candidate",
                     feedback_category=text,
                     visible_count=count,
+                    feedback_source="browser_positive_feedback" if count > 0 else None,
                 )
             if count > 0:
                 try:
