@@ -138,6 +138,59 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(page.mouse.move.call_count, 1)
         self.assertEqual(control.bounding_box.call_count, 2)
 
+    def test_first_viewport_control_finds_visible_svg_inside_hidden_checkbox(self):
+        control = Mock()
+        svg = Mock()
+        control.locator.return_value = svg
+        svg.count.return_value = 1
+        svg.nth.return_value = svg
+        control.bounding_box.return_value = {"x": 272, "y": 672, "width": 0, "height": 24}
+        control.is_visible.return_value = False
+        svg.bounding_box.return_value = {"x": 280, "y": 672, "width": 24, "height": 24}
+        svg.is_visible.return_value = True
+        locator = Mock()
+        locator.count.return_value = 1
+        locator.nth.return_value = control
+        page = Mock()
+        page.evaluate.return_value = {"width": 1000, "height": 720}
+        page.locator.return_value = locator
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = None
+
+        result = browser._first_viewport_control(("[role=checkbox]",))
+
+        self.assertIs(result, control)
+        self.assertIs(browser.last_control_target, svg)
+
+    def test_click_control_uses_normal_visible_locator_when_visibility_api_missing(self):
+        control = Mock()
+        control.is_visible.side_effect = AttributeError
+        control.bounding_box.return_value = {"x": 10, "y": 10, "width": 24, "height": 24}
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = Mock()
+
+        browser._click_control(control)
+
+        control.click.assert_called_once_with()
+
+    def test_hidden_checkbox_click_uses_visible_svg_without_force(self):
+        control = Mock()
+        svg = Mock()
+        control.is_visible.return_value = False
+        control.locator.return_value = svg
+        svg.count.return_value = 1
+        svg.nth.return_value = svg
+        svg.is_visible.return_value = True
+        svg.bounding_box.return_value = {"x": 280, "y": 672, "width": 24, "height": 24}
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = Mock()
+
+        browser._click_control(control)
+
+        control.click.assert_not_called()
+        svg.click.assert_called_once_with()
+
     def test_first_viewport_control_logs_hidden_candidates(self):
         control = Mock()
         parent = Mock()

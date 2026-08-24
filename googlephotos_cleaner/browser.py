@@ -218,6 +218,40 @@ class PlaywrightBrowser:
                 reason="post_action",
             )
 
+    def _visible_control_target(self, control):
+        """Return visible descendant used only as normal Playwright click target."""
+        visibility_check = getattr(control, "is_visible", None)
+        bounds_check = getattr(control, "bounding_box", None)
+        if not callable(visibility_check) and not callable(bounds_check):
+            return control
+        try:
+            if control.is_visible():
+                return control
+        except AttributeError:
+            try:
+                if callable(bounds_check) and bounds_check() is not None:
+                    return control
+            except Exception:
+                pass
+        except Exception:
+            pass
+        for selector in ("svg", "[role=img]", "[data-icon]", "path"):
+            try:
+                descendants = control.locator(selector)
+                for index in range(descendants.count()):
+                    target = descendants.nth(index)
+                    if target.is_visible() and target.bounding_box() is not None:
+                        return target
+            except Exception:
+                continue
+        return None
+
+    def _click_control(self, control) -> None:
+        target = getattr(self, "last_control_target", None) or self._visible_control_target(control)
+        if target is None:
+            raise CleanerError("Visible control target not found")
+        target.click()
+
     def _first_viewport_control(self, selectors: Sequence[str]):
         """Return top-left control in viewport without programmatic scrolling.
 
@@ -227,9 +261,11 @@ class PlaywrightBrowser:
         into view.
         """
         viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
-        visible: list[tuple[float, float, str, object]] = []
+        visible: list[tuple[float, float, str, object, object]] = []
         candidate_count = 0
+        target_count = 0
         self.last_locator_selector = None
+        self.last_control_target = None
         for selector in selectors:
             locator = self.page.locator(selector)
             selector_count = locator.count()
@@ -265,6 +301,15 @@ class PlaywrightBrowser:
                     box = candidate.bounding_box()
                 except Exception:
                     continue
+                target = self._visible_control_target(candidate)
+                if target is not None:
+                    target_count += 1
+                    try:
+                        target_box = target.bounding_box()
+                    except Exception:
+                        target_box = None
+                    if target_box is not None:
+                        box = target_box
                 # The day checkbox can remain zero-sized until its row hover
                 # state settles; re-read it after the visible pointer move.
                 if box is None or box["width"] <= 0 or box["height"] <= 0:
@@ -274,7 +319,7 @@ class PlaywrightBrowser:
                     except Exception:
                         continue
                 if box is not None and box["width"] > 0 and box["height"] > 0:
-                    visible.append((parent_box["y"], parent_box["x"], selector, candidate))
+                    visible.append((parent_box["y"], parent_box["x"], selector, candidate, target))
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "control_materialization",
@@ -283,11 +328,13 @@ class PlaywrightBrowser:
                 selector_count=len(selectors),
                 viewport=viewport,
                 pointer_moves=len(visible),
+                target_count=target_count,
             )
         if not visible:
             return None
         selected = min(visible, key=lambda item: (item[0], item[1]))
         self.last_locator_selector = selected[2]
+        self.last_control_target = selected[4]
         return selected[3]
 
     def _day_locator(self):
@@ -326,7 +373,7 @@ class PlaywrightBrowser:
             control = materialized
             label = control.get_attribute("aria-label") or label
             before = control.get_attribute("aria-checked")
-        control.click()
+        self._click_control(control)
         self.page.wait_for_timeout(150)
         # Google Photos may replace virtualized checkbox node after click. Read
         # fresh visible control rather than trusting stale locator state.
@@ -374,7 +421,7 @@ class PlaywrightBrowser:
             return None
         label = item.get_attribute("aria-label") or "single-media"
         before = item.get_attribute("aria-checked")
-        item.click()
+        self._click_control(item)
         after = item.get_attribute("aria-checked")
         verified = self.page.locator('[role="checkbox"][aria-checked="true"]').count() > 0
         self._log_selection(
@@ -454,7 +501,7 @@ class PlaywrightBrowser:
                 continue
             selected_before = selected.count()
             aria_before = item.get_attribute("aria-checked")
-            item.click()
+            self._click_control(item)
             self.page.wait_for_timeout(150)
             selected_after = selected.count()
             aria_after = item.get_attribute("aria-checked")
