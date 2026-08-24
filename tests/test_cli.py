@@ -60,6 +60,39 @@ class MainFlowTests(unittest.TestCase):
         finished = next(event for event in events if event["phase"] == "run_finished")
         self.assertEqual(finished["outcome"], "interrupted")
 
+    def test_main_preserves_cleaner_ambiguous_outcome(self):
+        import json
+        import main
+        from googlephotos_cleaner.automation import PassOutcome
+        from unittest.mock import patch
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            def close(self):
+                pass
+
+        class Cleaner:
+            last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
+            stop_requested = True
+            def __init__(self, *args, **kwargs):
+                pass
+            def run(self):
+                raise RuntimeError("ambiguous")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()), patch.object(main, "Cleaner", Cleaner):
+                self.assertEqual(main.run(["--dry-run", "--exit-on-error", "--log-file", str(log), "--profile-dir", str(Path(tmp) / "profile")]), 1)
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+
+        finished = next(event for event in events if event["phase"] == "run_finished")
+        stopped = next(event for event in events if event["phase"] == "cleaner_stopped")
+        self.assertEqual(finished["outcome"], "destructive_ambiguous")
+        self.assertEqual(stopped["outcome"], "destructive_ambiguous")
+
     def test_main_writes_failed_terminal_lifecycle(self):
         import json
         import main

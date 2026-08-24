@@ -108,7 +108,12 @@ def run(argv=None) -> int:
         logger.warning("Interrupted by user")
         return 130
     except (CleanerError, OSError, RuntimeError) as exc:
-        run_outcome = "failed"
+        cleaner_outcome = getattr(locals().get("cleaner"), "last_outcome", None)
+        run_outcome = (
+            cleaner_outcome.value
+            if cleaner_outcome is not None and cleaner_outcome.value != "continue"
+            else "failed"
+        )
         logger.error("Stopped safely: %s", exc)
         diagnostic.event(
             "run_failed",
