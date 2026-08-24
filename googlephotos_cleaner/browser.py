@@ -596,12 +596,19 @@ class PlaywrightBrowser:
                     "trash_feedback_candidate",
                     feedback_category=text,
                     visible_count=count,
-                    feedback_source="browser_positive_feedback" if count > 0 else None,
+                    feedback_source="dom_candidate_not_visible" if count > 0 else None,
                 )
             if count > 0:
                 try:
                     if feedback_locator.first.is_visible():
                         self.last_feedback_source = "browser_positive_feedback"
+                        if getattr(self, "diagnostic", None) is not None:
+                            self.diagnostic.event(
+                                "trash_feedback_candidate_visible",
+                                feedback_category=text,
+                                visible_count=count,
+                                feedback_source=self.last_feedback_source,
+                            )
                         return True
                 except (AttributeError, TypeError) as exc:
                     if getattr(self, "diagnostic", None) is not None:
