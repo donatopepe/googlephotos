@@ -150,6 +150,20 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         browser._select_single_media_for_day.assert_not_called()
 
+    def test_advance_timeline_uses_visible_mouse_wheel_and_configured_delay(self):
+        page = Mock()
+        page.evaluate.return_value = {"width": 1000, "height": 600}
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.scroll_step = 240
+        browser.scroll_delay_ms = 1500
+
+        self.assertTrue(browser.advance_timeline())
+
+        page.mouse.move.assert_called_once_with(500, 300)
+        page.mouse.wheel.assert_called_once_with(0, 240)
+        page.wait_for_timeout.assert_called_once_with(1500)
+
     def test_reset_timeline_to_top_uses_negative_wheel(self):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
@@ -162,17 +176,30 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page.mouse.wheel.assert_called_once_with(0, -240)
         page.wait_for_timeout.assert_called_once_with(1500)
 
-    def test_day_scan_does_not_navigate_to_library_or_fallback_to_media(self):
+    def test_missing_day_checkbox_falls_back_to_one_visible_media(self):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
         browser._day_locator = Mock(return_value=None)
         browser._select_single_media = Mock(return_value="Foto - fallback")
 
-        self.assertIsNone(browser.select_current_day())
+        self.assertEqual(browser.select_current_day(), "Foto - fallback")
+        self.assertEqual(browser.last_selection_kind, "media")
 
-        browser._select_single_media.assert_not_called()
+        browser._select_single_media.assert_called_once_with()
         page.goto.assert_not_called()
+
+    def test_missing_day_checkbox_falls_back_to_visible_video(self):
+        page = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._day_locator = Mock(return_value=None)
+        browser._select_single_media = Mock(return_value="Video - fallback")
+
+        self.assertEqual(browser.select_current_day(), "Video - fallback")
+        self.assertEqual(browser.last_selection_kind, "media")
+
+        browser._select_single_media.assert_called_once_with()
 
     def test_viewport_control_ignores_virtualized_timeout(self):
         page = Mock()
@@ -451,6 +478,36 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         action.click.assert_called_once_with()
 
+    def test_delete_selected_day_requires_positive_feedback_after_dom_disappears(self):
+        page = Mock()
+        action = Mock()
+        action.count.return_value = 1
+        action.first = action
+        page.get_by_role.return_value = action
+        page.get_by_text.return_value.count.return_value = 0
+        selected = Mock()
+        selected.count.side_effect = [1] + [0] * 10
+        page.locator.return_value = selected
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertFalse(browser.delete_selected_day())
+
+    def test_delete_selected_day_accepts_positive_feedback(self):
+        page = Mock()
+        action = Mock()
+        action.count.return_value = 1
+        action.first = action
+        page.get_by_role.return_value = action
+        page.get_by_text.return_value.count.side_effect = [1]
+        selected = Mock()
+        selected.count.side_effect = [1, 0]
+        page.locator.return_value = selected
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertTrue(browser.delete_selected_day())
+
     def test_delete_selected_day_clicks_confirm_when_second_button_appears(self):
         page = Mock()
         action = Mock()
@@ -463,6 +520,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         confirmation.count.return_value = 1
         confirmation.first = confirmation
         page.get_by_role.side_effect = [action, dialog]
+        page.get_by_text.return_value.count.return_value = 1
         selected = Mock()
         selected.count.side_effect = [1] + [1] * 10 + [0]
         page.locator.return_value = selected
@@ -479,6 +537,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         trash = Mock()
         confirmation = Mock()
         page.get_by_role.side_effect = [trash, confirmation]
+        page.get_by_text.return_value.count.side_effect = [1]
         trash.count.return_value = 1
         trash.first = trash
         trash.is_visible.return_value = True
@@ -493,6 +552,22 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         trash.click.assert_called_once_with()
         confirmation.click.assert_called_once_with()
+
+    def test_move_to_trash_rejects_missing_positive_feedback(self):
+        page = Mock()
+        trash = Mock()
+        confirmation = Mock()
+        page.get_by_role.side_effect = [trash, confirmation]
+        page.get_by_text.return_value.count.return_value = 0
+        trash.count.return_value = 1
+        trash.first = trash
+        confirmation.count.return_value = 1
+        confirmation.last = confirmation
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        with self.assertRaises(CleanerError):
+            browser.move_selected_to_trash(["photo-1"])
 
     def test_wait_for_target_absence_polls_for_positive_feedback_without_clicking(self):
         page = Mock()

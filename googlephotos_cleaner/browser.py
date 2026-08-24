@@ -183,7 +183,10 @@ class PlaywrightBrowser:
         self.page.wait_for_timeout(750)
         control = self._day_locator()
         if control is None:
-            return None
+            media = self._select_single_media()
+            if media is not None:
+                self.last_selection_kind = "media"
+            return media
         label = control.get_attribute("aria-label") or "unknown-day"
         control.click()
         self.page.wait_for_timeout(150)
@@ -191,6 +194,7 @@ class PlaywrightBrowser:
         # fresh visible control rather than trusting stale locator state.
         current = self._day_locator()
         if current is not None and current.get_attribute("aria-checked") == "true":
+            self.last_selection_kind = "day"
             return label
         raise CleanerError("Day selection could not be verified")
 
@@ -361,7 +365,7 @@ class PlaywrightBrowser:
         self.page.wait_for_timeout(1000)
         if selected.count() > 0:
             return False
-        return True
+        return self._trash_feedback_visible()
 
     def move_selected_to_trash(self, media_ids: Sequence[str]) -> None:
         if not media_ids:
@@ -385,6 +389,8 @@ class PlaywrightBrowser:
             raise CleanerError("Trash confirmation not found; result is ambiguous")
         confirmation.last.click()
         self.page.wait_for_timeout(1000)
+        if not self._trash_feedback_visible():
+            raise CleanerError("Trash completion feedback not found; result is ambiguous")
 
     def recover(self) -> None:
         """Dismiss transient overlays without reloading or resetting timeline."""
