@@ -146,16 +146,32 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         browser._select_single_media_for_day.assert_not_called()
 
-    def test_day_scan_does_not_navigate_to_library(self):
+    def test_day_scan_does_not_navigate_to_library_or_fallback_to_media(self):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
         browser._day_locator = Mock(return_value=None)
-        browser._select_single_media = Mock(return_value=None)
+        browser._select_single_media = Mock(return_value="Foto - fallback")
 
         self.assertIsNone(browser.select_current_day())
 
+        browser._select_single_media.assert_not_called()
         page.goto.assert_not_called()
+
+    def test_viewport_control_ignores_virtualized_timeout(self):
+        page = Mock()
+        page.evaluate.return_value = {"width": 800, "height": 600}
+        locator = Mock()
+        locator.count.return_value = 1
+        candidate = Mock()
+        candidate.locator.side_effect = lambda _selector: candidate
+        candidate.bounding_box.side_effect = TimeoutError("virtualized node")
+        locator.nth.return_value = candidate
+        page.locator.return_value = locator
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertIsNone(browser._first_viewport_control(("[role=checkbox]",)))
 
     def test_day_selector_targets_current_day_control(self):
         self.assertEqual(

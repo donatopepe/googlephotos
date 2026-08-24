@@ -116,7 +116,10 @@ class PlaywrightBrowser:
                 # ancestor already inside viewport; this only exposes its own UI.
                 for depth in range(1, 7):
                     ancestor = candidate.locator("xpath=" + "/.." * depth)
-                    box = ancestor.bounding_box()
+                    try:
+                        box = ancestor.bounding_box()
+                    except Exception:
+                        box = None
                     if box is not None and (
                         box["width"] > 0
                         and box["height"] > 0
@@ -133,12 +136,18 @@ class PlaywrightBrowser:
                     parent_box["x"] + min(parent_box["width"] / 2, 5),
                     parent_box["y"] + min(parent_box["height"] / 2, 5),
                 )
-                box = candidate.bounding_box()
+                try:
+                    box = candidate.bounding_box()
+                except Exception:
+                    continue
                 # The day checkbox can remain zero-sized until its row hover
                 # state settles; re-read it after the visible pointer move.
                 if box is None or box["width"] <= 0 or box["height"] <= 0:
                     self.page.wait_for_timeout(150)
-                    box = candidate.bounding_box()
+                    try:
+                        box = candidate.bounding_box()
+                    except Exception:
+                        continue
                 if box is not None and box["width"] > 0 and box["height"] > 0:
                     visible.append((parent_box["y"], parent_box["x"], candidate))
         return min(visible, default=None, key=lambda item: (item[0], item[1]))[2] if visible else None
@@ -150,7 +159,7 @@ class PlaywrightBrowser:
         self.page.wait_for_timeout(750)
         control = self._day_locator()
         if control is None:
-            return self._select_single_media()
+            return None
         label = control.get_attribute("aria-label") or "unknown-day"
         control.click()
         self.page.wait_for_timeout(150)
