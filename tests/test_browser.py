@@ -985,6 +985,23 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertTrue(browser._trash_feedback_visible())
         self.assertEqual(browser.last_feedback_source, "browser_positive_feedback")
 
+    def test_trash_feedback_visibility_api_failure_is_not_success(self):
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 1
+        feedback.first = feedback
+        feedback.first.is_visible.side_effect = RuntimeError("visibility unavailable")
+        page.get_by_text.return_value = feedback
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertFalse(browser._trash_feedback_visible())
+        self.assertIsNone(browser.last_feedback_source)
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_check_failed")
+        self.assertEqual(event.kwargs["positive_feedback"], False)
+
     def test_trash_feedback_check_failure_is_not_success(self):
         page = Mock()
         page.get_by_text.side_effect = RuntimeError("feedback query failed")
