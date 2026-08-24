@@ -161,8 +161,8 @@ class HandoffTests(unittest.TestCase):
         handoff = Path("/home/public/googlephotos/HANDOFF-2026-08-24-googlephotos-scan.md")
         text = handoff.read_text(encoding="utf-8")
 
-        self.assertIn("aec7846", text)
-        self.assertIn("Current worktree commit: `858fd06`", text)
+        self.assertIn("2c50f90", text)
+        self.assertIn("Current worktree commit: `aec7846`", text)
         self.assertIn("Nessun merge su `main`", text)
 
 class CliTests(unittest.TestCase):
