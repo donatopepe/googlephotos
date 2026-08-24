@@ -577,6 +577,8 @@ class PlaywrightBrowser:
             "Moved to bin",
         )
         for text in feedback:
+            count = 0
+            visible_count = 0
             try:
                 feedback_locator = self.page.get_by_text(text, exact=False)
                 count = feedback_locator.count()
@@ -586,6 +588,9 @@ class PlaywrightBrowser:
                         "trash_feedback_check_failed",
                         "ERROR",
                         feedback_category=text,
+                        matched_count=count,
+                        visible_count=visible_count,
+                        feedback_source=None,
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                         positive_feedback=False,
@@ -605,6 +610,9 @@ class PlaywrightBrowser:
                             "trash_feedback_check_failed",
                             "ERROR",
                             feedback_category=text,
+                            matched_count=count,
+                            visible_count=visible_count,
+                            feedback_source=None,
                             error_type=type(exc).__name__,
                             error_message=str(exc),
                             positive_feedback=False,
@@ -616,6 +624,9 @@ class PlaywrightBrowser:
                             "trash_feedback_check_failed",
                             "ERROR",
                             feedback_category=text,
+                            matched_count=count,
+                            visible_count=visible_count,
+                            feedback_source=None,
                             error_type=type(exc).__name__,
                             error_message=str(exc),
                             positive_feedback=False,
