@@ -5,7 +5,7 @@ Generated from worktree `/home/public/googlephotos/.worktrees/verbose-runtime-di
 ## Git
 
 - Base/main: `fcabfe5`
-- HEAD before this evidence commit: `858fd06`
+- HEAD before this evidence commit: `858fd06`; evidence commit: `aec7846`
 - Branch: `fix/verbose-runtime-diagnostics`
 - Worktree status before evidence commit: only this evidence spec/plan untracked; implementation worktree clean.
 - Main not modified; no merge performed.
