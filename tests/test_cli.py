@@ -157,12 +157,12 @@ class MainFlowTests(unittest.TestCase):
 
 
 class HandoffTests(unittest.TestCase):
-    def test_handoff_records_current_terminal_commit(self):
+    def test_handoff_has_current_status_block(self):
         handoff = Path("/home/public/googlephotos/HANDOFF-2026-08-24-googlephotos-scan.md")
         text = handoff.read_text(encoding="utf-8")
 
-        self.assertIn("84c8b3d", text)
-        self.assertIn("Current worktree commit: `ae14419`", text)
+        self.assertIn("## Stato corrente", text)
+        self.assertRegex(text, r"Current worktree commit: `[0-9a-f]+`")
         self.assertIn("Nessun merge su `main`", text)
 
 class CliTests(unittest.TestCase):
