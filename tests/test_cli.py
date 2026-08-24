@@ -19,6 +19,7 @@ class CliTests(unittest.TestCase):
         self.assertFalse(args.exit_on_error)
         self.assertEqual(args.max_idle_scrolls, 5)
         self.assertEqual(args.selection_size, 1)
+        self.assertFalse(args.media_first)
 
     def test_parser_supports_dry_run_and_batch_limit(self):
         args = parse_args(
@@ -47,6 +48,11 @@ class CliTests(unittest.TestCase):
     def test_parser_supports_selection_size(self):
         args = parse_args(["--selection-size", "4"])
         self.assertEqual(args.selection_size, 4)
+
+    def test_parser_supports_media_first_mode(self):
+        args = parse_args(["--selection-size", "100", "--media-first"])
+        self.assertEqual(args.selection_size, 100)
+        self.assertTrue(args.media_first)
 
     def test_parser_supports_idle_scroll_limit(self):
         args = parse_args(["--max-idle-scrolls", "7"])

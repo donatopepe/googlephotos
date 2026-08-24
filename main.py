@@ -41,9 +41,9 @@ def run(argv=None) -> int:
             logger=logger,
             diagnostic=diagnostic,
             checkpoint=checkpoint,
-            # Multi-selection uses individually verified visible media; one target
-            # retains day-first behavior.
-            day_mode=args.selection_size == 1,
+            # Day-first is default. Selection size controls batch capacity only;
+            # --media-first explicitly opts into individual media batches.
+            day_mode=not args.media_first,
             max_idle_scrolls=args.max_idle_scrolls,
             pending=pending,
             # User authorized discarding ambiguous media batch journals instead

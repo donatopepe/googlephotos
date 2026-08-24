@@ -54,7 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--selection-size",
         type=_positive_int,
         default=1,
-        help="maximum current-viewport day/media targets to select before one Trash action (default: 1)",
+        help="maximum current-viewport media targets to select before one Trash action (default: 1)",
+    )
+    parser.add_argument(
+        "--media-first",
+        action="store_true",
+        help="skip day-first selection and process visible media batches instead",
     )
     parser.add_argument(
         "--max-retries",

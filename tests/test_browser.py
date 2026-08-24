@@ -76,6 +76,19 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         second.hover.assert_not_called()
         hidden.hover.assert_not_called()
 
+    def test_day_selection_clicks_and_verifies_current_day_control(self):
+        control = Mock()
+        control.get_attribute.side_effect = ["Seleziona tutte le foto a partire da: dom 2 ago", "true"]
+        page = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._day_locator = Mock(return_value=control)
+
+        result = browser.select_current_day()
+
+        self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
+        control.click.assert_called_once_with()
+
     def test_day_selection_falls_back_to_single_media_when_day_control_stays_unselected(self):
         control = Mock()
         control.get_attribute.side_effect = ["Seleziona tutte le foto a partire da: dom 2 ago", "false"]
