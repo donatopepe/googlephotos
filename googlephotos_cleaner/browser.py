@@ -375,16 +375,22 @@ class PlaywrightBrowser:
             before = control.get_attribute("aria-checked")
         self._click_control(control)
         self.page.wait_for_timeout(150)
-        # Google Photos may replace virtualized checkbox node after click. Read
-        # fresh visible control rather than trusting stale locator state.
+        # Read clicked locator first. Google Photos may reorder virtualized rows,
+        # so the topmost fresh locator can represent a different day.
         try:
-            current = self._day_locator()
+            after = control.get_attribute("aria-checked")
         except (StopIteration, IndexError):
-            current = None
-        try:
-            after = current.get_attribute("aria-checked") if current is not None else None
-        except (StopIteration, IndexError):
-            after = before
+            after = None
+        # Re-resolve only for diagnostics/fallback when clicked node has no state.
+        if after is None:
+            try:
+                current = self._day_locator()
+            except (StopIteration, IndexError):
+                current = None
+            try:
+                after = current.get_attribute("aria-checked") if current is not None else None
+            except (StopIteration, IndexError):
+                after = before
         if after is not None and not isinstance(after, str):
             after = "true" if before == "false" else None
         verified = after == "true"

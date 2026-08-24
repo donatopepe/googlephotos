@@ -82,6 +82,32 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         second.hover.assert_not_called()
         hidden.hover.assert_not_called()
 
+    def test_first_viewport_control_keeps_selected_candidate_target_after_materialization(self):
+        first = Mock()
+        second = Mock()
+        target = Mock()
+        for control in (first, second):
+            control.locator.return_value = target
+            control.is_visible.return_value = False
+            control.bounding_box.return_value = {"x": 272, "y": 672, "width": 0, "height": 24}
+        target.count.return_value = 1
+        target.nth.return_value = target
+        target.is_visible.return_value = True
+        target.bounding_box.return_value = {"x": 280, "y": 672, "width": 24, "height": 24}
+        locator = Mock()
+        locator.count.return_value = 2
+        locator.nth.side_effect = [first, second]
+        page = Mock()
+        page.evaluate.return_value = {"width": 1000, "height": 720}
+        page.locator.return_value = locator
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        result = browser._first_viewport_control(("[role=checkbox]",))
+
+        self.assertIs(result, first)
+        self.assertIs(browser.last_control_target, target)
+
     def test_day_selection_rechecks_materialized_control_before_click(self):
         first = Mock()
         second = Mock()
@@ -236,6 +262,27 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertIs(result, control)
         self.assertEqual(page.mouse.move.call_count, 2)
+
+    def test_day_selection_verifies_clicked_day_not_topmost_day(self):
+        initial = Mock()
+        clicked = Mock()
+        other = Mock()
+        initial.get_attribute.side_effect = ["Seleziona tutte le foto a partire da: dom 2 ago", "false"]
+        clicked.get_attribute.side_effect = lambda name: (
+            "Seleziona tutte le foto a partire da: dom 2 ago"
+            if name == "aria-label" else ("true" if clicked.click.call_count else "false")
+        )
+        other.get_attribute.side_effect = ["Seleziona tutte le foto a partire da: lun 1 ago", "false"]
+        page = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = None
+        browser._day_locator = Mock(side_effect=[initial, clicked, other])
+
+        result = browser.select_current_day()
+
+        self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
+        clicked.click.assert_called_once_with()
 
     def test_day_selection_rechecks_fresh_control_after_click(self):
         stale = Mock()
