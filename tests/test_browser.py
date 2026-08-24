@@ -1148,6 +1148,15 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertFalse(browser._trash_feedback_visible())
         self.assertIsNone(browser.last_feedback_source)
 
+    def test_trash_feedback_wait_rejects_non_positive_timeout(self):
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = Mock()
+
+        with self.assertRaises(ValueError):
+            browser._wait_for_trash_feedback(timeout_ms=0)
+        with self.assertRaises(ValueError):
+            browser._wait_for_trash_feedback(timeout_ms=-1)
+
     def test_final_trash_feedback_poll_logs_final_check_count(self):
         from unittest.mock import patch
         page = Mock()

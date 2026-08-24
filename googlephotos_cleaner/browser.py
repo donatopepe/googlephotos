@@ -719,6 +719,8 @@ class PlaywrightBrowser:
         return None
 
     def _wait_for_trash_feedback(self, timeout_ms: int = 5000) -> bool:
+        if timeout_ms <= 0:
+            raise ValueError("timeout_ms must be greater than zero")
         deadline = time.monotonic() + timeout_ms / 1000
         checks = 0
         while time.monotonic() < deadline:
