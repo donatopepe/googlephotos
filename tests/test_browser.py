@@ -851,6 +851,29 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertTrue(browser.delete_selected_day())
 
+    def test_delete_selected_day_completion_logs_feedback_source(self):
+        page = Mock()
+        action = Mock()
+        action.count.return_value = 1
+        action.first = action
+        action.first.is_visible.return_value = True
+        page.get_by_role.return_value = action
+        page.get_by_text.return_value.count.return_value = 1
+        page.get_by_text.return_value.first = page.get_by_text.return_value
+        page.get_by_text.return_value.first.is_visible.return_value = True
+        selected = Mock()
+        selected.count.side_effect = [1] + [0] * 20
+        page.locator.return_value = selected
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser.delete_selected_day())
+
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_checked")
+        self.assertEqual(event.kwargs["feedback_source"], "browser_positive_feedback")
+
     def test_delete_selected_day_accepts_positive_feedback(self):
         page = Mock()
         action = Mock()

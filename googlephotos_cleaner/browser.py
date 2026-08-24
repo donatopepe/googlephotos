@@ -759,6 +759,7 @@ class PlaywrightBrowser:
                         "trash_feedback_checked",
                         selected_after=selected.count(),
                         positive_feedback=feedback,
+                        feedback_source=self.last_feedback_source,
                         result="confirmed" if feedback else "ambiguous",
                     )
                 return feedback
@@ -794,6 +795,7 @@ class PlaywrightBrowser:
                 "trash_confirmation_completed",
                 selected_after=selected_after,
                 positive_feedback=feedback,
+                feedback_source=self.last_feedback_source,
                 result="confirmed" if feedback else "ambiguous",
             )
         if selected_after > 0:
@@ -858,6 +860,7 @@ class PlaywrightBrowser:
             self.diagnostic.event(
                 "trash_batch_feedback_checked",
                 positive_feedback=feedback,
+                feedback_source=self.last_feedback_source,
                 result="confirmed" if feedback else "ambiguous",
             )
         if not feedback:
