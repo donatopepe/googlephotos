@@ -972,6 +972,19 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             browser.move_selected_to_trash(["photo-1"])
 
+    def test_trash_feedback_requires_new_visible_feedback_after_baseline(self):
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 1
+        feedback.first = feedback
+        feedback.first.is_visible.return_value = True
+        page.get_by_text.return_value = feedback
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertTrue(browser._trash_feedback_visible())
+        self.assertEqual(browser.last_feedback_source, "browser_positive_feedback")
+
     def test_trash_feedback_check_failure_is_not_success(self):
         page = Mock()
         page.get_by_text.side_effect = RuntimeError("feedback query failed")
