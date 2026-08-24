@@ -729,13 +729,24 @@ class PlaywrightBrowser:
                     "trash_feedback_check",
                     timeout_ms=timeout_ms,
                     check=checks,
+                    final=False,
                     positive_feedback=feedback,
                     feedback_source=self.last_feedback_source,
                 )
             if feedback:
                 return True
             self.page.wait_for_timeout(250)
-        return self._trash_feedback_visible()
+        feedback = self._trash_feedback_visible()
+        if getattr(self, "diagnostic", None) is not None:
+            self.diagnostic.event(
+                "trash_feedback_check",
+                timeout_ms=timeout_ms,
+                check=checks,
+                final=True,
+                positive_feedback=feedback,
+                feedback_source=self.last_feedback_source,
+            )
+        return feedback
 
     def delete_selected_day(self) -> bool:
         trash_names = (

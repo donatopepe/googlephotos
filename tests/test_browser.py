@@ -1115,6 +1115,59 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(event.kwargs["visible_count"], 2)
         self.assertEqual(event.kwargs["feedback_source"], "browser_positive_feedback")
 
+    def test_trash_feedback_check_failure_clears_previous_source(self):
+        page = Mock()
+        feedback = Mock()
+        feedback.count.side_effect = [1, 1]
+        feedback.first = feedback
+        feedback.first.is_visible.side_effect = [True, RuntimeError("visibility failed")]
+        page.get_by_text.return_value = feedback
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._trash_feedback_visible())
+        self.assertEqual(browser.last_feedback_source, "browser_positive_feedback")
+        self.assertFalse(browser._trash_feedback_visible())
+        self.assertIsNone(browser.last_feedback_source)
+
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 1
+        feedback.first = feedback
+        feedback.first.is_visible.side_effect = [True, RuntimeError("visibility failed")]
+        page.get_by_text.return_value = feedback
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._trash_feedback_visible())
+        self.assertEqual(browser.last_feedback_source, "browser_positive_feedback")
+        self.assertFalse(browser._trash_feedback_visible())
+        self.assertIsNone(browser.last_feedback_source)
+
+    def test_final_trash_feedback_poll_logs_source(self):
+        from unittest.mock import patch
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 1
+        feedback.first = feedback
+        feedback.first.is_visible.return_value = True
+        page.get_by_text.return_value = feedback
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        with patch("googlephotos_cleaner.browser.time.monotonic", side_effect=[0, 10]):
+            self.assertTrue(browser._wait_for_trash_feedback(timeout_ms=5000))
+
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_check")
+        self.assertEqual(event.kwargs["feedback_source"], "browser_positive_feedback")
+        self.assertTrue(event.kwargs["final"])
+
     def test_trash_feedback_requires_new_visible_feedback_after_baseline(self):
         page = Mock()
         feedback = Mock()
