@@ -594,6 +594,8 @@ class PlaywrightBrowser:
 
     def wait_for_target_absence(self, label: str, timeout_ms: int = 30000) -> bool:
         """Reconcile only with positive trash feedback; never clicks Trash again."""
+        if timeout_ms <= 0:
+            raise ValueError("timeout_ms must be greater than zero")
         deadline = time.monotonic() + timeout_ms / 1000
         checks = 0
         while time.monotonic() < deadline:
@@ -607,6 +609,7 @@ class PlaywrightBrowser:
                     check=checks,
                     target_count=self._target_count(label),
                     positive_feedback=feedback,
+                    feedback_source="browser_positive_feedback" if feedback else None,
                 )
             if feedback:
                 return True
@@ -621,6 +624,7 @@ class PlaywrightBrowser:
                 checks=checks,
                 target_count=self._target_count(label),
                 positive_feedback=feedback,
+                feedback_source="browser_positive_feedback" if feedback else None,
             )
         return feedback
 
