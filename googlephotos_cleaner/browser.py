@@ -591,25 +591,14 @@ class PlaywrightBrowser:
                         positive_feedback=False,
                     )
                 return False
-            if getattr(self, "diagnostic", None) is not None:
-                self.diagnostic.event(
-                    "trash_feedback_candidate",
-                    feedback_category=text,
-                    visible_count=count,
-                    feedback_source="dom_candidate_not_visible" if count > 0 else None,
-                )
-            if count > 0:
+            visible_count = 0
+            visible_target = None
+            for index in range(count):
                 try:
-                    if feedback_locator.first.is_visible():
-                        self.last_feedback_source = "browser_positive_feedback"
-                        if getattr(self, "diagnostic", None) is not None:
-                            self.diagnostic.event(
-                                "trash_feedback_candidate_visible",
-                                feedback_category=text,
-                                visible_count=count,
-                                feedback_source=self.last_feedback_source,
-                            )
-                        return True
+                    candidate = feedback_locator.first if index == 0 else feedback_locator.nth(index)
+                    if candidate.is_visible():
+                        visible_count += 1
+                        visible_target = candidate
                 except (AttributeError, TypeError) as exc:
                     if getattr(self, "diagnostic", None) is not None:
                         self.diagnostic.event(
@@ -632,6 +621,26 @@ class PlaywrightBrowser:
                             positive_feedback=False,
                         )
                     return False
+            candidate_source = "browser_positive_feedback" if visible_count else ("dom_candidate_not_visible" if count else None)
+            if getattr(self, "diagnostic", None) is not None:
+                self.diagnostic.event(
+                    "trash_feedback_candidate",
+                    feedback_category=text,
+                    matched_count=count,
+                    visible_count=visible_count,
+                    feedback_source=candidate_source,
+                )
+            if visible_target is not None:
+                self.last_feedback_source = "browser_positive_feedback"
+                if getattr(self, "diagnostic", None) is not None:
+                    self.diagnostic.event(
+                        "trash_feedback_candidate_visible",
+                        feedback_category=text,
+                        matched_count=count,
+                        visible_count=visible_count,
+                        feedback_source=self.last_feedback_source,
+                    )
+                return True
         return False
 
     def wait_for_target_absence(self, label: str, timeout_ms: int = 30000) -> bool:
