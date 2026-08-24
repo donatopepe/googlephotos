@@ -109,6 +109,26 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(processed, 2)
         self.assertEqual(browser.trashed, [])
 
+    def test_bounded_dry_run_day_pass_requests_stop(self):
+        browser = FakeBrowser([("2 Aug", 1), ("1 Aug", 1)])
+
+        cleaner = Cleaner(browser, dry_run=True, day_mode=True, max_batches=1)
+        processed = cleaner.run()
+
+        self.assertEqual(processed, 1)
+        self.assertTrue(cleaner.stop_requested)
+        self.assertEqual(browser.trashed, [])
+
+    def test_bounded_media_pass_requests_stop(self):
+        browser = FakeBrowser([["photo-1"], ["photo-2"]])
+
+        cleaner = Cleaner(browser, dry_run=True, day_mode=False, max_batches=1)
+        processed = cleaner.run()
+
+        self.assertEqual(processed, 1)
+        self.assertTrue(cleaner.stop_requested)
+        self.assertEqual(browser.trashed, [])
+
     def test_cleaner_skips_stale_day_and_continues(self):
         class SkipStaleBrowser(FakeBrowser):
             def __init__(self):
