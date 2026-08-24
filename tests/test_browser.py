@@ -232,6 +232,31 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         browser._select_single_media.assert_called_once_with()
 
+    def test_viewport_control_records_selector_for_selected_control(self):
+        first = Mock()
+        first.locator.return_value = first
+        first.bounding_box.side_effect = [
+            {"x": 0, "y": 10, "width": 20, "height": 20},
+        ] * 7
+        second = Mock()
+        second.locator.return_value = second
+        second.bounding_box.side_effect = [
+            {"x": 0, "y": 100, "width": 20, "height": 20},
+        ] * 6
+        locator = Mock()
+        locator.count.return_value = 1
+        locator.nth.side_effect = [first]
+        page = Mock()
+        page.evaluate.return_value = {"width": 800, "height": 600}
+        page.locator.side_effect = [locator, Mock(count=Mock(return_value=0))]
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = None
+
+        browser._first_viewport_control(("first-selector", "second-selector"))
+
+        self.assertEqual(browser.last_locator_selector, "first-selector")
+
     def test_viewport_control_ignores_virtualized_timeout(self):
         page = Mock()
         page.evaluate.return_value = {"width": 800, "height": 600}
