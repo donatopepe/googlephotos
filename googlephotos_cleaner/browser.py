@@ -601,12 +601,24 @@ class PlaywrightBrowser:
         if not media_ids:
             raise CleanerError("Refusing to trash an empty selection")
 
+        button_counts = {}
         trash = self.page.get_by_role("button", name="Move to trash")
-        if trash.count() == 0:
+        button_counts["Move to trash"] = trash.count()
+        if button_counts["Move to trash"] == 0:
             trash = self.page.get_by_role("button", name="Sposta nel cestino")
+            button_counts["Sposta nel cestino"] = trash.count()
+        if getattr(self, "diagnostic", None) is not None:
+            self.diagnostic.event(
+                "trash_batch_click_started",
+                selected_count=len(media_ids),
+                action_button_counts=button_counts,
+                result="started",
+            )
         if trash.count() == 0:
             raise CleanerError("Trash action not found; refusing blind click")
         trash.first.click()
+        if getattr(self, "diagnostic", None) is not None:
+            self.diagnostic.event("trash_batch_click_completed", result="clicked")
         self.page.wait_for_timeout(500)
         confirmation = self.page.get_by_role(
             "button", name="Move to trash"
@@ -615,11 +627,25 @@ class PlaywrightBrowser:
             confirmation = self.page.get_by_role(
                 "button", name="Sposta nel cestino"
             )
-        if confirmation.count() == 0:
+        confirmation_count = confirmation.count()
+        if getattr(self, "diagnostic", None) is not None:
+            self.diagnostic.event(
+                "trash_batch_dialog_detected",
+                confirmation_count=confirmation_count,
+                result="confirmation_available" if confirmation_count else "missing",
+            )
+        if confirmation_count == 0:
             raise CleanerError("Trash confirmation not found; result is ambiguous")
         confirmation.last.click()
         self.page.wait_for_timeout(1000)
-        if not self._trash_feedback_visible():
+        feedback = self._trash_feedback_visible()
+        if getattr(self, "diagnostic", None) is not None:
+            self.diagnostic.event(
+                "trash_batch_feedback_checked",
+                positive_feedback=feedback,
+                result="confirmed" if feedback else "ambiguous",
+            )
+        if not feedback:
             raise CleanerError("Trash completion feedback not found; result is ambiguous")
 
     def recover(self) -> None:
