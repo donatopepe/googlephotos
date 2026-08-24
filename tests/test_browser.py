@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from googlephotos_cleaner.browser import PlaywrightBrowser, is_authenticated_url
+from googlephotos_cleaner.automation import CleanerError
 
 
 class BrowserDiagnosticsTests(unittest.TestCase):
@@ -111,7 +112,27 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertIs(result, control)
         self.assertEqual(page.mouse.move.call_count, 2)
 
-    def test_day_selection_falls_back_to_single_media_when_day_control_stays_unselected(self):
+    def test_day_selection_rechecks_fresh_control_after_click(self):
+        stale = Mock()
+        fresh = Mock()
+        stale.get_attribute.side_effect = ["Seleziona tutte le foto a partire da: dom 2 ago", "false"]
+        fresh.get_attribute.side_effect = lambda name: (
+            "Seleziona tutte le foto a partire da: dom 2 ago"
+            if name == "aria-label"
+            else "true"
+        )
+        page = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._day_locator = Mock(side_effect=[stale, fresh])
+
+        result = browser.select_current_day()
+
+        self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
+        stale.click.assert_called_once_with()
+        fresh.click.assert_not_called()
+
+    def test_day_selection_never_falls_back_to_single_media_after_day_control_found(self):
         control = Mock()
         control.get_attribute.side_effect = ["Seleziona tutte le foto a partire da: dom 2 ago", "false"]
         page = Mock()
@@ -120,10 +141,10 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         browser._day_locator = Mock(return_value=control)
         browser._select_single_media_for_day = Mock(return_value="Foto - Verticale - 2 ago")
 
-        result = browser.select_current_day()
+        with self.assertRaises(CleanerError):
+            browser.select_current_day()
 
-        self.assertEqual(result, "Foto - Verticale - 2 ago")
-        browser._select_single_media_for_day.assert_called_once_with(control)
+        browser._select_single_media_for_day.assert_not_called()
 
     def test_day_scan_does_not_navigate_to_library(self):
         page = Mock()

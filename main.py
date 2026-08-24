@@ -45,6 +45,7 @@ def run(argv=None) -> int:
             # --media-first explicitly opts into individual media batches.
             day_mode=not args.media_first,
             max_idle_scrolls=args.max_idle_scrolls,
+            max_day_scan_failures=args.max_day_scan_failures,
             pending=pending,
             # User authorized discarding ambiguous media batch journals instead
             # of retrying their Trash action after a restart.

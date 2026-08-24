@@ -38,6 +38,7 @@ class Cleaner:
         checkpoint: CheckpointStore | None = None,
         day_mode: bool = True,
         max_idle_scrolls: int = 5,
+        max_day_scan_failures: int = 3,
         pending: PendingActionStore | None = None,
         discard_ambiguous_media_batches: bool = False,
     ) -> None:
@@ -49,6 +50,8 @@ class Cleaner:
             raise ValueError("max_retries must not be negative")
         if max_idle_scrolls <= 0:
             raise ValueError("max_idle_scrolls must be greater than zero")
+        if max_day_scan_failures <= 0:
+            raise ValueError("max_day_scan_failures must be greater than zero")
         self.browser = browser
         self.batch_size = batch_size
         self.max_batches = max_batches
@@ -59,6 +62,7 @@ class Cleaner:
         self.checkpoint = checkpoint
         self.day_mode = day_mode
         self.max_idle_scrolls = max_idle_scrolls
+        self.max_day_scan_failures = max_day_scan_failures
         self.pending = pending
         self.discard_ambiguous_media_batches = discard_ambiguous_media_batches
 
@@ -218,14 +222,17 @@ class Cleaner:
 
     def _run_days(self, processed: int, total_photos: int) -> int:
         idle_scrolls = 0
+        scan_failures = 0
         while self.max_batches is None or processed < self.max_batches:
             day = None
+            scan_failed = False
             for attempt in range(self.max_retries + 1):
                 try:
                     day = self.browser.select_current_day()
                     self._event("day_scan", day=day, attempt=attempt)
                     break
                 except Exception as exc:
+                    scan_failed = True
                     self._event(
                         "day_scan_failed",
                         "WARNING",
@@ -242,6 +249,17 @@ class Cleaner:
                         break
                     self._recover(attempt + 1, exc)
             if not day:
+                if scan_failed:
+                    scan_failures += 1
+                if scan_failed and scan_failures >= self.max_day_scan_failures:
+                    self._event(
+                        "day_scan_stopped",
+                        "ERROR",
+                        failures=scan_failures,
+                    )
+                    if self.checkpoint:
+                        self.checkpoint.save(batch=processed, photos=total_photos, state="scan_failed")
+                    return processed
                 idle_scrolls += 1
                 self._event("timeline_idle", idle_scrolls=idle_scrolls)
                 wait_for_timeline = getattr(self.browser, "wait_for_current_timeline", None)
@@ -259,6 +277,7 @@ class Cleaner:
                     self.checkpoint.save(batch=processed, photos=total_photos, state="idle")
                 return processed
             idle_scrolls = 0
+            scan_failures = 0
             if self.dry_run:
                 self._event("day_selection", day=day, dry_run=True)
                 self.logger.info("Dry-run: found current day %s", day)

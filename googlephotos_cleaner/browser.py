@@ -148,18 +148,17 @@ class PlaywrightBrowser:
 
     def select_current_day(self) -> str | None:
         self.page.wait_for_timeout(750)
-        locator = self._day_locator()
-        if locator is None:
+        control = self._day_locator()
+        if control is None:
             return self._select_single_media()
-        control = locator
         label = control.get_attribute("aria-label") or "unknown-day"
         control.click()
         self.page.wait_for_timeout(150)
-        if control.get_attribute("aria-checked") == "true":
+        # Google Photos may replace virtualized checkbox node after click. Read
+        # fresh visible control rather than trusting stale locator state.
+        current = self._day_locator()
+        if current is not None and current.get_attribute("aria-checked") == "true":
             return label
-        fallback = self._select_single_media_for_day(control)
-        if fallback is not None:
-            return fallback
         raise CleanerError("Day selection could not be verified")
 
     def _select_single_media_for_day(self, _day_control) -> str | None:

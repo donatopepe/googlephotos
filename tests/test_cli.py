@@ -58,6 +58,10 @@ class CliTests(unittest.TestCase):
         args = parse_args(["--max-idle-scrolls", "7"])
         self.assertEqual(args.max_idle_scrolls, 7)
 
+    def test_parser_supports_day_scan_attempt_limit(self):
+        args = parse_args(["--max-day-scan-failures", "4"])
+        self.assertEqual(args.max_day_scan_failures, 4)
+
     def test_parser_supports_exit_on_error(self):
         args = parse_args(["--exit-on-error"])
         self.assertTrue(args.exit_on_error)

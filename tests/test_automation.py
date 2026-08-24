@@ -136,6 +136,25 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(browser.advance_count, 1)
         self.assertEqual(browser.trashed, [["day"]])
 
+    def test_cleaner_stops_after_bounded_day_scan_failures(self):
+        class AlwaysStaleBrowser(FakeBrowser):
+            def select_current_day(self):
+                raise TimeoutError("stale day control")
+
+            def recover(self):
+                pass
+
+        browser = AlwaysStaleBrowser([])
+        processed = Cleaner(
+            browser,
+            day_mode=True,
+            max_retries=1,
+            max_day_scan_failures=2,
+        ).run()
+
+        self.assertEqual(processed, 0)
+        self.assertEqual(browser.trashed, [])
+
     def test_cleaner_retries_day_selection_before_delete(self):
         class RetryDayBrowser(FakeBrowser):
             def __init__(self):

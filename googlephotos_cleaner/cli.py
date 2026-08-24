@@ -90,6 +90,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="consecutive timeline scrolls without progress before ending (default: 5)",
     )
+    parser.add_argument(
+        "--max-day-scan-failures",
+        type=_positive_int,
+        default=3,
+        help="stop after this many consecutive day-scan failure cycles (default: 3)",
+    )
     return parser
 
 
