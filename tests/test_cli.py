@@ -97,6 +97,45 @@ class MainFlowTests(unittest.TestCase):
         self.assertEqual(stopped["outcome"], "destructive_ambiguous")
         self.assertEqual(sum(event["phase"] == "diagnostics_failed" for event in events), 1)
 
+    def test_main_records_cleanup_status_when_browser_construction_fails(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", side_effect=RuntimeError("boom")):
+                self.assertEqual(main.run(["--dry-run", "--exit-on-error", "--log-file", str(log), "--profile-dir", str(Path(tmp) / "profile")]), 1)
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+
+        stopped = next(event for event in events if event["phase"] == "cleaner_stopped")
+        finished = next(event for event in events if event["phase"] == "run_finished")
+        self.assertEqual(stopped["browser_cleanup"], "not_started")
+        self.assertEqual(finished["browser_cleanup"], "not_started")
+
+    def test_main_records_cleanup_failure_in_terminal_events(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            def close(self):
+                raise RuntimeError("close boom")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()), patch.object(main, "Cleaner", side_effect=RuntimeError("run boom")):
+                self.assertEqual(main.run(["--dry-run", "--exit-on-error", "--log-file", str(log), "--profile-dir", str(Path(tmp) / "profile")]), 1)
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+
+        for phase in ("cleaner_stopped", "run_finished"):
+            event = next(event for event in events if event["phase"] == phase)
+            self.assertEqual(event["browser_cleanup"], "failed")
+
     def test_main_writes_failed_terminal_lifecycle(self):
         import json
         import main

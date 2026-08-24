@@ -24,7 +24,7 @@ def configure_logging(log_file):
     return logger
 
 
-def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pending, checkpoint, browser=None):
+def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pending, checkpoint, browser=None, browser_cleanup="not_started"):
     diagnostic.event(
         "cleaner_stopped",
         "WARNING" if stop_requested or outcome in {"failed", "interrupted", "failed_close"} else "INFO",
@@ -39,6 +39,7 @@ def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pen
         profile_lock_path=str(getattr(getattr(browser, "profile_lock", None), "path", "")) if browser is not None else None,
         profile_lock_owner_pid=getattr(getattr(browser, "profile_lock", None), "pid", None) if browser is not None else None,
         profile_lock_owned=getattr(getattr(browser, "profile_lock", None), "acquired", None) if browser is not None else None,
+        browser_cleanup=browser_cleanup,
         **process_context(),
     )
 
@@ -53,6 +54,7 @@ def run(argv=None) -> int:
     keep_browser_open = False
     processed = None
     run_outcome = None
+    browser_cleanup = "not_started"
     try:
         browser = PlaywrightBrowser(
             args.profile_dir,
@@ -162,7 +164,9 @@ def run(argv=None) -> int:
         if browser is not None and not keep_browser_open:
             try:
                 browser.close()
+                browser_cleanup = "closed"
             except Exception as close_error:
+                browser_cleanup = "failed"
                 run_outcome = "failed_close"
                 diagnostic.event(
                     "browser_close_failed",
@@ -180,6 +184,7 @@ def run(argv=None) -> int:
             pending=pending,
             checkpoint=checkpoint,
             browser=browser,
+            browser_cleanup=browser_cleanup,
         )
         diagnostic.event(
             "run_finished",
@@ -195,6 +200,7 @@ def run(argv=None) -> int:
             profile_lock_path=str(getattr(getattr(browser, "profile_lock", None), "path", "")) if browser is not None else None,
             profile_lock_owner_pid=getattr(getattr(browser, "profile_lock", None), "pid", None) if browser is not None else None,
             profile_lock_owned=getattr(getattr(browser, "profile_lock", None), "acquired", None) if browser is not None else None,
+            browser_cleanup=browser_cleanup,
         )
 
 
