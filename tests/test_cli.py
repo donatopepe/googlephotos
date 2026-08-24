@@ -94,6 +94,7 @@ class MainFlowTests(unittest.TestCase):
         stopped = next(event for event in events if event["phase"] == "cleaner_stopped")
         self.assertEqual(finished["outcome"], "destructive_ambiguous")
         self.assertEqual(stopped["outcome"], "destructive_ambiguous")
+        self.assertEqual(sum(event["phase"] == "diagnostics_failed" for event in events), 1)
 
     def test_main_writes_failed_terminal_lifecycle(self):
         import json

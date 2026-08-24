@@ -137,12 +137,12 @@ def run(argv=None) -> int:
                     artifacts={key: str(value) for key, value in paths.items()},
                 )
             except Exception as diagnostic_error:
-                logger.error("Could not capture diagnostics: %s", diagnostic_error)
                 diagnostic.event(
                     "diagnostics_failed",
                     "ERROR",
                     error_type=type(diagnostic_error).__name__,
                     error_message=str(diagnostic_error),
+                    console_reported=False,
                 )
         if browser is not None and not args.exit_on_error:
             keep_browser_open = True
