@@ -602,8 +602,17 @@ class PlaywrightBrowser:
                     if feedback_locator.first.is_visible():
                         self.last_feedback_source = "browser_positive_feedback"
                         return True
-                except (AttributeError, TypeError):
-                    return True
+                except (AttributeError, TypeError) as exc:
+                    if getattr(self, "diagnostic", None) is not None:
+                        self.diagnostic.event(
+                            "trash_feedback_check_failed",
+                            "ERROR",
+                            feedback_category=text,
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
+                            positive_feedback=False,
+                        )
+                    return False
                 except Exception as exc:
                     if getattr(self, "diagnostic", None) is not None:
                         self.diagnostic.event(
