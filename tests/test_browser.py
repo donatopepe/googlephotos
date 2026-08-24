@@ -727,6 +727,26 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         action.click.assert_called_once_with()
 
+    def test_retry_pending_action_uses_visible_current_target(self):
+        page = Mock()
+        hidden = Mock()
+        visible = Mock()
+        hidden.count.return_value = 1
+        hidden.first = hidden
+        hidden.first.is_visible.return_value = False
+        visible.count.return_value = 1
+        visible.first = visible
+        visible.first.is_visible.return_value = True
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._visible_first = Mock(return_value=visible)
+        browser.delete_selected_day = Mock(return_value=True)
+        page.get_by_role.return_value = hidden
+
+        self.assertTrue(browser.retry_pending_action("day label"))
+        hidden.click.assert_not_called()
+        visible.click.assert_called_once_with()
+
     def test_delete_selected_day_ignores_hidden_trash_button(self):
         page = Mock()
         hidden = Mock()

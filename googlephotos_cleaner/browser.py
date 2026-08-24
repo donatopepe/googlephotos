@@ -609,7 +609,10 @@ class PlaywrightBrowser:
         target = self.page.get_by_role("checkbox", name=label, exact=True)
         if target.count() == 0:
             return False
-        target.first.click()
+        visible_target = self._visible_first(target)
+        if visible_target is None:
+            return False
+        self._click_control(visible_target)
         return self.delete_selected_day()
 
     def _visible_first(self, locator):
