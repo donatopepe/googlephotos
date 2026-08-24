@@ -885,6 +885,30 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             browser.move_selected_to_trash(["photo-1"])
 
+    def test_trash_feedback_ignores_hidden_text(self):
+        page = Mock()
+        hidden = Mock()
+        hidden.count.return_value = 1
+        hidden.first = hidden
+        hidden.first.is_visible.return_value = False
+        page.get_by_text.return_value = hidden
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertFalse(browser._trash_feedback_visible())
+
+    def test_trash_feedback_accepts_visible_text(self):
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 1
+        feedback.first = feedback
+        feedback.first.is_visible.return_value = True
+        page.get_by_text.return_value = feedback
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertTrue(browser._trash_feedback_visible())
+
     def test_wait_for_target_absence_polls_for_positive_feedback_without_clicking(self):
         page = Mock()
         # Five feedback strings are checked before each polling wait.
