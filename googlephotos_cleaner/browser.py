@@ -776,15 +776,17 @@ class PlaywrightBrowser:
                 "button", name="Sposta nel cestino"
             )
         confirmation_count = confirmation.count()
+        visible_confirmation = self._visible_first(confirmation) if confirmation_count else None
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "trash_batch_dialog_detected",
                 confirmation_count=confirmation_count,
-                result="confirmation_available" if confirmation_count else "missing",
+                visible_confirmation_count=1 if visible_confirmation is not None else 0,
+                result="confirmation_available" if visible_confirmation is not None else "missing",
             )
-        if confirmation_count == 0:
-            raise CleanerError("Trash confirmation not found; result is ambiguous")
-        confirmation.last.click()
+        if visible_confirmation is None:
+            raise CleanerError("Visible Trash confirmation not found; result is ambiguous")
+        visible_confirmation.click()
         self.page.wait_for_timeout(1000)
         feedback = self._wait_for_trash_feedback()
         if getattr(self, "diagnostic", None) is not None:

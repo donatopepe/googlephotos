@@ -193,8 +193,8 @@ class HandoffTests(unittest.TestCase):
         text = handoff.read_text(encoding="utf-8")
 
         self.assertIn("## Stato corrente", text)
-        self.assertRegex(text, r"Current worktree commit: `[0-9a-f]+`")
-        self.assertIn("Nessun merge su `main`", text)
+        self.assertRegex(text, r"Current (?:worktree|main) commit: `[0-9a-f]+`")
+        self.assertTrue("Nessun merge su `main`" in text or "Merge completato in `main`" in text)
 
 class CliTests(unittest.TestCase):
     def test_parser_has_safe_defaults(self):

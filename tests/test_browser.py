@@ -869,6 +869,26 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         trash.click.assert_called_once_with()
         confirmation.click.assert_called_once_with()
 
+    def test_move_to_trash_rejects_hidden_confirmation_button(self):
+        page = Mock()
+        trash = Mock()
+        confirmation = Mock()
+        trash.count.return_value = 1
+        trash.first = trash
+        trash.first.is_visible.return_value = True
+        confirmation.count.return_value = 1
+        confirmation.first = confirmation
+        confirmation.last = confirmation
+        confirmation.first.is_visible.return_value = False
+        page.get_by_role.side_effect = [trash, confirmation, confirmation]
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        with self.assertRaises(CleanerError):
+            browser.move_selected_to_trash(["photo-1"])
+
+        confirmation.click.assert_not_called()
+
     def test_move_to_trash_rejects_missing_positive_feedback(self):
         page = Mock()
         trash = Mock()
