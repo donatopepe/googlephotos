@@ -96,6 +96,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="stop after this many consecutive day-scan failure cycles (default: 3)",
     )
+    parser.add_argument(
+        "--scroll-step",
+        type=_positive_int,
+        default=240,
+        help="timeline wheel distance per scroll (default: 240)",
+    )
+    parser.add_argument(
+        "--scroll-delay-ms",
+        type=_positive_int,
+        default=1500,
+        help="wait after each timeline scroll in milliseconds (default: 1500)",
+    )
     return parser
 
 

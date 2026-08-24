@@ -17,9 +17,15 @@ def is_authenticated_url(url: str) -> bool:
 class PlaywrightBrowser:
     """Browser adapter kept isolated from batch orchestration.
 
-    Google Photos DOM labels can change. Selectors are centralized here and every
-    destructive action is guarded by a visible, non-empty selection.
+    Default timeline motion stays small and slow to let virtualized day rows
+    materialize reliably.
     """
+
+    DEFAULT_SCROLL_STEP = 240
+    DEFAULT_SCROLL_DELAY_MS = 1500
+
+    # Google Photos DOM labels can change. Selectors are centralized here and
+    # every destructive action is guarded by a visible, non-empty selection.
 
     CHROMIUM_SANDBOX = True
     CHROMIUM_ARGS: tuple[str, ...] = ()
@@ -44,7 +50,20 @@ class PlaywrightBrowser:
         '[role="checkbox"][aria-checked="false"][aria-label*=" - "]',
     )
 
-    def __init__(self, profile_dir: Path, *, headless: bool = False) -> None:
+    def __init__(
+        self,
+        profile_dir: Path,
+        *,
+        headless: bool = False,
+        scroll_step: int = 240,
+        scroll_delay_ms: int = 1500,
+    ) -> None:
+        if scroll_step <= 0:
+            raise ValueError("scroll_step must be greater than zero")
+        if scroll_delay_ms <= 0:
+            raise ValueError("scroll_delay_ms must be greater than zero")
+        self.scroll_step = scroll_step
+        self.scroll_delay_ms = scroll_delay_ms
         profile_dir = profile_dir.expanduser().resolve()
         profile_dir.mkdir(parents=True, exist_ok=True)
         self.profile_dir = profile_dir
@@ -93,9 +112,14 @@ class PlaywrightBrowser:
         x = viewport["width"] / 2
         y = viewport["height"] / 2
         self.page.mouse.move(x, y)
-        self.page.mouse.wheel(0, 720)
-        self.page.wait_for_timeout(750)
+        self.page.mouse.wheel(0, getattr(self, "scroll_step", self.DEFAULT_SCROLL_STEP))
+        self.page.wait_for_timeout(getattr(self, "scroll_delay_ms", self.DEFAULT_SCROLL_DELAY_MS))
         return True
+
+    def reset_timeline_to_top(self) -> None:
+        """Move timeline upward one visible wheel step after deletion."""
+        self.page.mouse.wheel(0, -getattr(self, "scroll_step", self.DEFAULT_SCROLL_STEP))
+        self.page.wait_for_timeout(getattr(self, "scroll_delay_ms", self.DEFAULT_SCROLL_DELAY_MS))
 
     def _first_viewport_control(self, selectors: Sequence[str]):
         """Return top-left control in viewport without programmatic scrolling.

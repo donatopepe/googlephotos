@@ -8,6 +8,10 @@ from googlephotos_cleaner.automation import CleanerError
 
 
 class BrowserDiagnosticsTests(unittest.TestCase):
+    def test_browser_uses_small_slow_scroll_defaults(self):
+        self.assertEqual(PlaywrightBrowser.DEFAULT_SCROLL_STEP, 240)
+        self.assertEqual(PlaywrightBrowser.DEFAULT_SCROLL_DELAY_MS, 1500)
+
     def test_google_photos_landing_page_is_not_authenticated(self):
         self.assertFalse(is_authenticated_url("https://www.google.com/photos/about/"))
         self.assertFalse(is_authenticated_url("https://accounts.google.com/signin"))
@@ -145,6 +149,18 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             browser.select_current_day()
 
         browser._select_single_media_for_day.assert_not_called()
+
+    def test_reset_timeline_to_top_uses_negative_wheel(self):
+        page = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.scroll_step = 240
+        browser.scroll_delay_ms = 1500
+
+        browser.reset_timeline_to_top()
+
+        page.mouse.wheel.assert_called_once_with(0, -240)
+        page.wait_for_timeout.assert_called_once_with(1500)
 
     def test_day_scan_does_not_navigate_to_library_or_fallback_to_media(self):
         page = Mock()

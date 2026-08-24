@@ -20,6 +20,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.max_idle_scrolls, 5)
         self.assertEqual(args.selection_size, 1)
         self.assertFalse(args.media_first)
+        self.assertEqual(args.scroll_step, 240)
+        self.assertEqual(args.scroll_delay_ms, 1500)
 
     def test_parser_supports_dry_run_and_batch_limit(self):
         args = parse_args(
@@ -53,6 +55,11 @@ class CliTests(unittest.TestCase):
         args = parse_args(["--selection-size", "100", "--media-first"])
         self.assertEqual(args.selection_size, 100)
         self.assertTrue(args.media_first)
+
+    def test_parser_supports_scroll_tuning(self):
+        args = parse_args(["--scroll-step", "180", "--scroll-delay-ms", "2000"])
+        self.assertEqual(args.scroll_step, 180)
+        self.assertEqual(args.scroll_delay_ms, 2000)
 
     def test_parser_supports_idle_scroll_limit(self):
         args = parse_args(["--max-idle-scrolls", "7"])

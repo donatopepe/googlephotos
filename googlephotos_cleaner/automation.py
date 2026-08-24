@@ -40,6 +40,7 @@ class Cleaner:
         max_idle_scrolls: int = 5,
         max_day_scan_failures: int = 3,
         pending: PendingActionStore | None = None,
+        reset_timeline_after_action: bool = True,
         discard_ambiguous_media_batches: bool = False,
     ) -> None:
         if batch_size <= 0:
@@ -66,6 +67,7 @@ class Cleaner:
         self.pending = pending
         self.discard_ambiguous_media_batches = discard_ambiguous_media_batches
         self.stop_requested = False
+        self.reset_timeline_after_action = reset_timeline_after_action
 
     def _event(self, phase: str, level: str = "INFO", **context: Any) -> None:
         if self.diagnostic is not None:
@@ -310,6 +312,9 @@ class Cleaner:
                             self.pending.clear()
                             self._event("day_trash_completed", day=day, reconciled=True)
                             self.logger.info("Moved day %s to Trash", day)
+                            reset_top = getattr(self.browser, "reset_timeline_to_top", None)
+                            if reset_top is not None and self.reset_timeline_after_action:
+                                reset_top()
                             processed += 1
                             total_photos += 1
                             if self.checkpoint:
@@ -344,6 +349,9 @@ class Cleaner:
                     return processed
                 self._event("day_trash_completed", day=day)
                 self.logger.info("Moved day %s to Trash", day)
+                reset_top = getattr(self.browser, "reset_timeline_to_top", None)
+                if reset_top is not None and self.reset_timeline_after_action:
+                    reset_top()
             processed += 1
             total_photos += 1
             if self.checkpoint:

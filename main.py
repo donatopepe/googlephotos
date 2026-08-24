@@ -30,7 +30,12 @@ def run(argv=None) -> int:
     browser = None
     keep_browser_open = False
     try:
-        browser = PlaywrightBrowser(args.profile_dir, headless=False)
+        browser = PlaywrightBrowser(
+            args.profile_dir,
+            headless=False,
+            scroll_step=args.scroll_step,
+            scroll_delay_ms=args.scroll_delay_ms,
+        )
         diagnostic.event("browser_started", url=browser.page.url)
         cleaner = Cleaner(
             browser,
@@ -47,6 +52,7 @@ def run(argv=None) -> int:
             max_idle_scrolls=args.max_idle_scrolls,
             max_day_scan_failures=args.max_day_scan_failures,
             pending=pending,
+            reset_timeline_after_action=True,
             # User authorized discarding ambiguous media batch journals instead
             # of retrying their Trash action after a restart.
             discard_ambiguous_media_batches=True,
