@@ -352,6 +352,7 @@ class Cleaner:
                         "ERROR",
                         error_type=type(exc).__name__,
                         count=len(media_ids),
+                        error_message=str(exc),
                     )
                     if self.checkpoint:
                         self.checkpoint.save(
@@ -369,6 +370,7 @@ class Cleaner:
                     count=len(media_ids),
                     positive_feedback=True,
                     result="confirmed",
+                    feedback_source="browser_positive_feedback",
                 )
                 self.logger.info("Moved %d photos to Trash", len(media_ids))
 

@@ -112,6 +112,20 @@ class BrowserAdapterTests(unittest.TestCase):
         completed = next(event for event in events if event["phase"] == "trash_completed")
         self.assertTrue(completed["positive_feedback"])
         self.assertEqual(completed["result"], "confirmed")
+        self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
+
+    def test_ambiguous_trash_event_includes_sanitized_error(self):
+        browser = AmbiguousBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="ambiguous-proof")
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(browser, day_mode=False, diagnostic=diagnostic).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        ambiguous = next(event for event in events if event["phase"] == "destructive_action_ambiguous")
+        self.assertEqual(ambiguous["error_message"], "result unknown after trash click")
+        self.assertFalse(any(event["phase"] == "trash_completed" for event in events))
 
     def test_dry_run_does_not_move_photos(self):
         browser = FakeBrowser([["old-1"], ["old-2"]])
