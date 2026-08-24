@@ -131,6 +131,35 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(started["mode"], "dry-run")
         self.assertEqual(started["scroll_step"], 240)
         self.assertEqual(started["pending_timeout_ms"], 30000)
+        self.assertIn("uid", started)
+        self.assertIn("username", started)
+        self.assertEqual(started["max_idle_scrolls"], 5)
+
+    def test_pass_done_is_terminal_without_second_run(self):
+        browser = FakeBrowser([["old-1"]])
+        cleaner = Cleaner(browser, dry_run=True, day_mode=False, max_batches=1)
+
+        first = cleaner.run()
+        second = cleaner.run()
+
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)
+        self.assertEqual(browser.batches, [])
+        self.assertEqual(cleaner.last_outcome, PassOutcome.PASS_DONE)
+
+    def test_run_started_contains_process_and_policy_context(self):
+        browser = FakeBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="context")
+            Cleaner(browser, dry_run=True, day_mode=False, max_batches=1, diagnostic=diagnostic).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        started = next(event for event in events if event["phase"] == "run_started")
+        self.assertIn("pid", started)
+        self.assertIn("ppid", started)
+        self.assertEqual(started["pending_policy"], "block")
+        self.assertEqual(started["pending_timeout_ms"], 30000)
 
     def test_bounded_dry_run_day_pass_requests_stop(self):
         browser = FakeBrowser([("2 Aug", 1), ("1 Aug", 1)])

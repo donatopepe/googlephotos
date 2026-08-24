@@ -111,6 +111,7 @@ class PlaywrightBrowser:
                     error_type=type(exc).__name__,
                     error_message=str(exc),
                     profile_lock_owned=self.profile_lock.acquired,
+                    recovery="playwright_stopped_lock_released",
                 )
             self._playwright.stop()
             self.profile_lock.release()
@@ -708,6 +709,8 @@ class PlaywrightBrowser:
                 "ERROR" if close_error else "INFO",
                 profile_lock_owned=self.profile_lock.acquired,
                 error_type=type(close_error).__name__ if close_error else None,
+                error_message=str(close_error) if close_error else None,
+                recovery="lock_released",
             )
         if close_error is not None:
             raise close_error

@@ -1,8 +1,41 @@
 from pathlib import Path
+import tempfile
 
 import unittest
 
 from googlephotos_cleaner.cli import build_parser, parse_args
+
+class MainFlowTests(unittest.TestCase):
+    def test_main_uses_one_cleaner_pass(self):
+        import main
+        from unittest.mock import patch
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+
+            def close(self):
+                pass
+
+        class Cleaner:
+            last_outcome = type("Outcome", (), {"value": "pass_done"})()
+            stop_requested = True
+
+            def __init__(self, *args, **kwargs):
+                self.calls = 0
+
+            def run(self):
+                self.calls += 1
+                return 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()), patch.object(main, "Cleaner", Cleaner):
+                result = main.run(["--dry-run", "--max-batches", "1", "--log-file", str(log), "--profile-dir", str(Path(tmp) / "profile")])
+
+        self.assertEqual(result, 0)
 
 
 class CliTests(unittest.TestCase):
@@ -24,6 +57,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.scroll_delay_ms, 1500)
         self.assertEqual(args.pending_action, "block")
         self.assertEqual(args.pending_timeout_ms, 30000)
+
+    def test_parser_supports_diagnostic_runtime_context_defaults(self):
+        args = parse_args([])
+
+        self.assertEqual(args.diagnostics_dir, Path("data/diagnostics"))
+        self.assertEqual(args.profile_dir, Path("data/browser-profile"))
 
     def test_parser_supports_dry_run_and_batch_limit(self):
         args = parse_args(

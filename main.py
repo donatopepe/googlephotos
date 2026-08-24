@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 
 from googlephotos_cleaner.automation import Cleaner, CleanerError
 from googlephotos_cleaner.browser import PlaywrightBrowser
 from googlephotos_cleaner.cli import parse_args
-from googlephotos_cleaner.diagnostics import CheckpointStore, DiagnosticLog, PendingActionStore
+from googlephotos_cleaner.diagnostics import CheckpointStore, DiagnosticLog, PendingActionStore, process_context
 
 
 def configure_logging(log_file):
@@ -30,6 +29,8 @@ def run(argv=None) -> int:
     pending = PendingActionStore(args.checkpoint_file.with_name("pending-action.json"))
     browser = None
     keep_browser_open = False
+    processed = None
+    run_outcome = None
     try:
         browser = PlaywrightBrowser(
             args.profile_dir,
@@ -40,15 +41,21 @@ def run(argv=None) -> int:
         )
         diagnostic.event(
             "browser_started",
-            pid=__import__("os").getpid(),
-            ppid=__import__("os").getppid(),
+            **process_context(),
             profile_dir=str(browser.profile_dir),
             profile_lock_path=str(browser.profile_lock.path),
+            profile_lock_owner_pid=getattr(browser.profile_lock, "pid", None),
             profile_lock_owned=getattr(browser.profile_lock, "acquired", None),
+            pending_path=str(pending.path),
+            checkpoint_path=str(checkpoint.path),
             url=browser.page.url,
             page_count=len(browser.context.pages),
             scroll_step=args.scroll_step,
             scroll_delay_ms=args.scroll_delay_ms,
+            max_idle_scrolls=args.max_idle_scrolls,
+            max_day_scan_failures=args.max_day_scan_failures,
+            pending_policy=args.pending_action,
+            pending_timeout_ms=args.pending_timeout_ms,
         )
         cleaner = Cleaner(
             browser,
@@ -72,36 +79,33 @@ def run(argv=None) -> int:
             pending_policy=args.pending_action,
             pending_timeout_ms=args.pending_timeout_ms,
         )
-        # Cleaner can stop a pass for idle DOM or a journaled pending action.
-        # Keep same visible browser/context and start a fresh reconciliation pass;
-        # never reopen Chrome or move the timeline.
-        while True:
-            cleaner.run()
-            if cleaner.stop_requested:
-                logger.warning("Cleaner requested safe stop")
-                diagnostic.event(
-                    "cleaner_stopped",
-                    "WARNING",
-                    outcome=cleaner.last_outcome.value,
-                    stop_requested=cleaner.stop_requested,
-                    pending_exists=pending.path.exists(),
-                    checkpoint_exists=checkpoint.path.exists(),
-                )
-                return 0
-            # Keep one browser/context alive; recoverable scan stalls are handled
-            # inside Cleaner and must not turn into a five-minute inspection sleep.
-            try:
-                browser.page.wait_for_timeout(1000)
-            except RuntimeError as exc:
-                logger.error("Browser page closed: %s", exc)
-                diagnostic.event("browser_page_closed", "ERROR", error_type=type(exc).__name__)
-                return 1
+        # One invocation owns one bounded pass. Cleaner handles bounded
+        # recovery and terminal stop; never re-enter pass loop.
+        processed = cleaner.run()
+        run_outcome = cleaner.last_outcome.value
+        diagnostic.event(
+            "cleaner_stopped",
+            "WARNING" if cleaner.stop_requested else "INFO",
+            outcome=run_outcome,
+            stop_requested=cleaner.stop_requested,
+            processed=processed,
+            pending_exists=pending.path.exists(),
+            checkpoint_exists=checkpoint.path.exists(),
+        )
+        return 0
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
         return 130
     except (CleanerError, OSError, RuntimeError) as exc:
+        run_outcome = "failed"
         logger.error("Stopped safely: %s", exc)
-        diagnostic.event("run_failed", "ERROR", error_type=type(exc).__name__, message=str(exc))
+        diagnostic.event(
+            "run_failed",
+            "ERROR",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            recovery="diagnostics_capture_attempted",
+        )
         if browser is not None:
             try:
                 artifact_dir = args.diagnostics_dir / diagnostic.run_id
@@ -118,6 +122,7 @@ def run(argv=None) -> int:
                     "diagnostics_failed",
                     "ERROR",
                     error_type=type(diagnostic_error).__name__,
+                    error_message=str(diagnostic_error),
                 )
         if browser is not None and not args.exit_on_error:
             keep_browser_open = True
@@ -132,9 +137,13 @@ def run(argv=None) -> int:
             browser.close()
         diagnostic.event(
             "run_finished",
-            pid=os.getpid(),
+            **process_context(),
+            outcome=run_outcome,
+            processed=processed,
             browser_open=browser is not None and keep_browser_open,
+            pending_path=str(pending.path),
             pending_exists=pending.path.exists(),
+            checkpoint_path=str(checkpoint.path),
             checkpoint_exists=checkpoint.path.exists(),
         )
 
