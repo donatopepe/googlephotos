@@ -162,7 +162,7 @@ class HandoffTests(unittest.TestCase):
         text = handoff.read_text(encoding="utf-8")
 
         self.assertIn("0ba2264", text)
-        self.assertIn("Current worktree commit: `0ba2264`", text)
+        self.assertIn("Current worktree commit: `5b57ad6`", text)
         self.assertIn("Nessun merge su `main`", text)
 
 class CliTests(unittest.TestCase):
