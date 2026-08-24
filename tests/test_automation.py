@@ -101,6 +101,18 @@ class BrowserAdapterTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             cleaner.run()
 
+    def test_trash_completion_event_contains_positive_feedback(self):
+        browser = FakeBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="trash-proof")
+            Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        completed = next(event for event in events if event["phase"] == "trash_completed")
+        self.assertTrue(completed["positive_feedback"])
+        self.assertEqual(completed["result"], "confirmed")
+
     def test_dry_run_does_not_move_photos(self):
         browser = FakeBrowser([["old-1"], ["old-2"]])
 

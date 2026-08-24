@@ -364,7 +364,12 @@ class Cleaner:
                     ) from exc
                 if self.pending:
                     self.pending.clear()
-                self._event("trash_completed", count=len(media_ids))
+                self._event(
+                    "trash_completed",
+                    count=len(media_ids),
+                    positive_feedback=True,
+                    result="confirmed",
+                )
                 self.logger.info("Moved %d photos to Trash", len(media_ids))
 
             processed += 1
@@ -495,6 +500,7 @@ class Cleaner:
                                 reconciled=True,
                                 positive_feedback=True,
                                 result="confirmed",
+                                reconciliation="feedback_confirmed",
                             )
                             self.logger.info("Moved day %s to Trash", day)
                             reset_top = getattr(self.browser, "reset_timeline_to_top", None)

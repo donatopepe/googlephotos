@@ -24,7 +24,7 @@ def configure_logging(log_file):
     return logger
 
 
-def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pending, checkpoint):
+def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pending, checkpoint, browser=None):
     diagnostic.event(
         "cleaner_stopped",
         "WARNING" if stop_requested or outcome in {"failed", "interrupted", "failed_close"} else "INFO",
@@ -35,6 +35,10 @@ def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pen
         pending_exists=pending.path.exists(),
         checkpoint_path=str(checkpoint.path),
         checkpoint_exists=checkpoint.path.exists(),
+        profile_dir=str(getattr(browser, "profile_dir", "")) if browser is not None else None,
+        profile_lock_path=str(getattr(getattr(browser, "profile_lock", None), "path", "")) if browser is not None else None,
+        profile_lock_owner_pid=getattr(getattr(browser, "profile_lock", None), "pid", None) if browser is not None else None,
+        profile_lock_owned=getattr(getattr(browser, "profile_lock", None), "acquired", None) if browser is not None else None,
         **process_context(),
     )
 
@@ -169,6 +173,7 @@ def run(argv=None) -> int:
             processed=processed,
             pending=pending,
             checkpoint=checkpoint,
+            browser=browser,
         )
         diagnostic.event(
             "run_finished",
@@ -180,6 +185,10 @@ def run(argv=None) -> int:
             pending_exists=pending.path.exists(),
             checkpoint_path=str(checkpoint.path),
             checkpoint_exists=checkpoint.path.exists(),
+            profile_dir=str(getattr(browser, "profile_dir", "")) if browser is not None else None,
+            profile_lock_path=str(getattr(getattr(browser, "profile_lock", None), "path", "")) if browser is not None else None,
+            profile_lock_owner_pid=getattr(getattr(browser, "profile_lock", None), "pid", None) if browser is not None else None,
+            profile_lock_owned=getattr(getattr(browser, "profile_lock", None), "acquired", None) if browser is not None else None,
         )
 
 

@@ -45,6 +45,8 @@ class MainFlowTests(unittest.TestCase):
             self.assertIn("pending_path", event)
             self.assertIn("checkpoint_path", event)
             self.assertIn("outcome", event)
+            self.assertIn("profile_dir", event)
+            self.assertIn("profile_lock_path", event)
 
     def test_main_writes_finished_outcome_on_keyboard_interrupt(self):
         import json
@@ -117,6 +119,8 @@ class MainFlowTests(unittest.TestCase):
         self.assertEqual(phases.count("cleaner_stopped"), 1)
         finished = next(event for event in events if event["phase"] == "run_finished")
         self.assertEqual(finished["outcome"], "failed")
+        self.assertIn("browser_open", finished)
+        self.assertIn("profile_dir", finished)
         self.assertEqual(phases.count("run_finished"), 1)
 
     def test_main_uses_one_cleaner_pass(self):
