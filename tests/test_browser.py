@@ -1148,6 +1148,41 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertFalse(browser._trash_feedback_visible())
         self.assertIsNone(browser.last_feedback_source)
 
+    def test_trash_feedback_wait_records_terminal_failure_on_observer_error(self):
+        from unittest.mock import patch
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.diagnostic = diagnostic
+        browser._trash_feedback_visible = Mock(side_effect=RuntimeError("observer failed"))
+
+        with patch("googlephotos_cleaner.browser.time.monotonic", side_effect=[0, 0]):
+            with self.assertRaises(RuntimeError):
+                browser._wait_for_trash_feedback(timeout_ms=5000)
+
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_check")
+        self.assertTrue(event.kwargs["final"])
+        self.assertFalse(event.kwargs["positive_feedback"])
+        self.assertIsNone(event.kwargs["feedback_source"])
+        self.assertEqual(event.kwargs["error_type"], "RuntimeError")
+
+    def test_trash_feedback_wait_records_final_observer_error_after_timeout(self):
+        from unittest.mock import patch
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.diagnostic = diagnostic
+        browser._trash_feedback_visible = Mock(side_effect=RuntimeError("final observer failed"))
+
+        with patch("googlephotos_cleaner.browser.time.monotonic", side_effect=[0, 10]):
+            with self.assertRaises(RuntimeError):
+                browser._wait_for_trash_feedback(timeout_ms=5000)
+
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_check")
+        self.assertTrue(event.kwargs["final"])
+        self.assertEqual(event.kwargs["check"], 1)
+        self.assertFalse(event.kwargs["positive_feedback"])
+        self.assertIsNone(event.kwargs["feedback_source"])
+        self.assertEqual(event.kwargs["error_type"], "RuntimeError")
+
     def test_trash_feedback_wait_rejects_non_positive_timeout(self):
         browser = object.__new__(PlaywrightBrowser)
         browser.page = Mock()
