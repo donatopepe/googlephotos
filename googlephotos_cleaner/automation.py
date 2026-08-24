@@ -112,11 +112,15 @@ class Cleaner:
         self._event("authenticated")
         if self.pending:
             previous = self.pending.load()
-            if previous and self.dry_run:
+            if previous and self.dry_run and self.pending_policy != "discard":
                 self._event("pending_unresolved", "WARNING", target=previous.get("label"), policy=self.pending_policy)
                 self.stop_requested = True
                 self.last_outcome = PassOutcome.PENDING_UNRESOLVED
                 return 0
+            if previous and self.pending_policy == "discard":
+                self.pending.clear()
+                self._event("pending_discarded_manual", "WARNING", target=previous.get("label"), policy=self.pending_policy)
+                previous = None
             if previous and self.pending_policy in {"block", "inspect"}:
                 self._event(
                     "pending_inspected" if self.pending_policy == "inspect" else "pending_unresolved",
