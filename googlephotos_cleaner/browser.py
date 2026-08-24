@@ -134,6 +134,11 @@ class PlaywrightBrowser:
                     parent_box["y"] + min(parent_box["height"] / 2, 5),
                 )
                 box = candidate.bounding_box()
+                # The day checkbox can remain zero-sized until its row hover
+                # state settles; re-read it after the visible pointer move.
+                if box is None or box["width"] <= 0 or box["height"] <= 0:
+                    self.page.wait_for_timeout(150)
+                    box = candidate.bounding_box()
                 if box is not None and box["width"] > 0 and box["height"] > 0:
                     visible.append((parent_box["y"], parent_box["x"], candidate))
         return min(visible, default=None, key=lambda item: (item[0], item[1]))[2] if visible else None

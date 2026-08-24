@@ -89,6 +89,28 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
         control.click.assert_called_once_with()
 
+    def test_day_locator_reveals_zero_width_checkbox_from_visible_day_row(self):
+        control = Mock()
+        row = Mock()
+        control.locator.return_value = row
+        control.bounding_box.side_effect = [
+            None,
+            {"x": 0, "y": 100, "width": 24, "height": 24},
+            {"x": 0, "y": 100, "width": 24, "height": 24},
+        ]
+        row.bounding_box.return_value = {"x": 0, "y": 100, "width": 960, "height": 48}
+        page = Mock()
+        page.evaluate.return_value = {"width": 1000, "height": 600}
+        page.locator.return_value.count.return_value = 1
+        page.locator.return_value.nth.return_value = control
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        result = browser._day_locator()
+
+        self.assertIs(result, control)
+        self.assertEqual(page.mouse.move.call_count, 2)
+
     def test_day_selection_falls_back_to_single_media_when_day_control_stays_unselected(self):
         control = Mock()
         control.get_attribute.side_effect = ["Seleziona tutte le foto a partire da: dom 2 ago", "false"]
