@@ -236,26 +236,26 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         first = Mock()
         first.locator.return_value = first
         first.bounding_box.side_effect = [
-            {"x": 0, "y": 10, "width": 20, "height": 20},
+            {"x": 0, "y": 100, "width": 20, "height": 20},
         ] * 7
         second = Mock()
         second.locator.return_value = second
         second.bounding_box.side_effect = [
-            {"x": 0, "y": 100, "width": 20, "height": 20},
-        ] * 6
-        locator = Mock()
-        locator.count.return_value = 1
-        locator.nth.side_effect = [first]
+            {"x": 0, "y": 10, "width": 20, "height": 20},
+        ] * 7
+        first_locator = Mock(count=Mock(return_value=1), nth=Mock(return_value=first))
+        second_locator = Mock(count=Mock(return_value=1), nth=Mock(return_value=second))
         page = Mock()
         page.evaluate.return_value = {"width": 800, "height": 600}
-        page.locator.side_effect = [locator, Mock(count=Mock(return_value=0))]
+        page.locator.side_effect = [first_locator, second_locator]
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
         browser.diagnostic = None
 
-        browser._first_viewport_control(("first-selector", "second-selector"))
+        selected = browser._first_viewport_control(("first-selector", "second-selector"))
 
-        self.assertEqual(browser.last_locator_selector, "first-selector")
+        self.assertIs(selected, second)
+        self.assertEqual(browser.last_locator_selector, "second-selector")
 
     def test_viewport_control_ignores_virtualized_timeout(self):
         page = Mock()
