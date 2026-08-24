@@ -126,8 +126,31 @@ class PlaywrightBrowser:
                 self._playwright = None
                 self.profile_lock.release()
             raise
-        self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
-        self.page.goto(self.LOGIN_URL, wait_until="domcontentloaded")
+        try:
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+            self.page.goto(self.LOGIN_URL, wait_until="domcontentloaded")
+        except Exception as exc:
+            if getattr(self, "diagnostic", None) is not None:
+                self.diagnostic.event(
+                    "browser_page_init_failed",
+                    "ERROR",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    recovery="context_stopped_lock_released",
+                )
+            try:
+                if self.context is not None:
+                    self.context.close()
+            finally:
+                try:
+                    if self._playwright is not None:
+                        self._playwright.stop()
+                finally:
+                    self.context = None
+                    self._playwright = None
+                    self.page = None
+                    self.profile_lock.release()
+            raise
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "browser_page_ready",

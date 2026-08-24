@@ -22,6 +22,52 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertTrue(PlaywrightBrowser.CHROMIUM_SANDBOX)
         self.assertEqual(PlaywrightBrowser.CHROMIUM_ARGS, ())
 
+    def test_browser_constructor_releases_lock_when_page_navigation_fails(self):
+        from unittest.mock import patch
+
+        class FakeLock:
+            acquired = True
+            pid = 99
+            path = Path("profile/.googlephotos.lock")
+            def acquire(self):
+                self.acquired = True
+            def release(self):
+                self.acquired = False
+
+        class FakePage:
+            url = "about:blank"
+            def goto(self, *_args, **_kwargs):
+                raise RuntimeError("navigation failed")
+
+        class FakeContext:
+            pages = [FakePage()]
+            def new_page(self):
+                return self.pages[0]
+            def close(self):
+                self.closed = True
+
+        class FakeChromium:
+            def launch_persistent_context(self, **_kwargs):
+                return FakeContext()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+            def stop(self):
+                self.stopped = True
+
+        class FakeSync:
+            def start(self):
+                return FakePlaywright()
+
+        import sys
+        import types
+        fake_playwright_module = types.SimpleNamespace(sync_playwright=lambda: FakeSync())
+        with patch.dict(sys.modules, {"playwright": types.ModuleType("playwright"), "playwright.sync_api": fake_playwright_module}), patch(
+            "googlephotos_cleaner.browser.ProfileLock", return_value=FakeLock()
+        ):
+            with self.assertRaisesRegex(RuntimeError, "navigation failed"):
+                PlaywrightBrowser(Path("profile"))
+
     def test_browser_profile_path_is_not_recreated(self):
         self.assertTrue(hasattr(PlaywrightBrowser, "LOGIN_URL"))
         self.assertTrue(hasattr(PlaywrightBrowser, "PHOTOS_URL"))
