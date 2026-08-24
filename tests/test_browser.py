@@ -189,6 +189,32 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertIs(result, control)
         self.assertIs(browser.last_control_target, svg)
 
+    def test_click_control_does_not_reuse_target_from_previous_control(self):
+        previous = Mock()
+        current = Mock()
+        previous_target = Mock()
+        current_target = Mock()
+        previous.is_visible.return_value = False
+        previous.locator.return_value = previous_target
+        previous_target.count.return_value = 1
+        previous_target.nth.return_value = previous_target
+        previous_target.is_visible.return_value = True
+        previous_target.bounding_box.return_value = {"x": 1, "y": 1, "width": 24, "height": 24}
+        current.is_visible.return_value = False
+        current.locator.return_value = current_target
+        current_target.count.return_value = 1
+        current_target.nth.return_value = current_target
+        current_target.is_visible.return_value = True
+        current_target.bounding_box.return_value = {"x": 2, "y": 2, "width": 24, "height": 24}
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = Mock()
+        browser.last_control_target = previous_target
+
+        browser._click_control(current)
+
+        previous_target.click.assert_not_called()
+        current_target.click.assert_called_once_with()
+
     def test_click_control_uses_normal_visible_locator_when_visibility_api_missing(self):
         control = Mock()
         control.is_visible.side_effect = AttributeError

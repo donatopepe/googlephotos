@@ -247,7 +247,7 @@ class PlaywrightBrowser:
         return None
 
     def _click_control(self, control) -> None:
-        target = getattr(self, "last_control_target", None) or self._visible_control_target(control)
+        target = self._visible_control_target(control)
         if target is None:
             raise CleanerError("Visible control target not found")
         target.click()
