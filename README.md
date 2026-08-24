@@ -49,6 +49,8 @@ Nessun prompt per foto. Per fermare, usa `Ctrl+C`; processo termina senza svuota
 --exit-on-error        chiude browser dopo errore; default lascia browser aperto
 --max-idle-scrolls N   scansioni senza progresso prima dello scroll reale, default 5
 --selection-size N     massimo numero di media visibili selezionati prima di un solo Cestino, default 1
+--pending-action MODE  block (default), inspect o discard esplicito del pending
+--pending-timeout-ms N timeout bounded per riconciliazione pending, default 30000
 ```
 
 Tool clicca il primo controllo giorno disponibile `Seleziona tutte le foto a partire da: ...`, poi `Elimina`/`Sposta nel cestino` e conferma automaticamente il dialogo. Non dipende dal giorno più vecchio. Se DOM non espone giorni, scorre timeline virtualizzata, aspetta caricamento e ripete: una singola scansione senza giorni non significa libreria vuota.
@@ -61,7 +63,7 @@ Esempio prudente:
 
 Log vengono scritti su stdout e `data/run.log`. Diagnostica strutturata JSONL viene scritta in `data/run.jsonl`. In caso di errore, screenshot e HTML vengono salvati in `data/diagnostics/<run_id>/`; URL vengono redatti senza query e nessun cookie/password viene scritto. `data/checkpoint.json` viene aggiornato atomicamente dopo ogni batch.
 
-Prima del cestino viene scritto `data/pending-action.json` con label non segreta del target e posizione timeline. Se Google Foto non mostra dialogo né aggiorna subito la selezione, avvio successivo riconcilia stato: target assente = azione completata; target presente = nuova selezione, senza doppio click cieco sull'azione precedente.
+Prima del Cestino viene scritto `data/pending-action.json` con label non segreta del target e posizione timeline. La scomparsa del target dal DOM o l'assenza della checkbox non dimostrano che Google Foto abbia completato l'azione: il pending resta conservato finché non compare feedback positivo. L'avvio predefinito (`--pending-action block`) ispeziona il pending e termina senza nuovo click né attesa lunga. `--pending-action inspect` registra l'ispezione e termina; `--pending-action discard` cancella il journal solo come autorizzazione esplicita, senza dichiarare Trash completato. `--pending-timeout-ms` limita ogni riconciliazione esplicita.
 
 Autoriparazione prova solo operazioni non distruttive: chiude dialoghi noti, ricarica pagina e ripete scansione fino a `--max-retries`. Se risultato di `Elimina`/`Sposta nel cestino` è ambiguo, processo salva diagnosi e termina; non ripete click distruttivo.
 Eventi JSONL includono `day_scan`, `day_trash_started`, `day_trash_completed` e `day_checkpoint_saved`.

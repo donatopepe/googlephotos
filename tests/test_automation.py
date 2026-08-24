@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from googlephotos_cleaner.automation import Cleaner, CleanerError, DestructiveActionAmbiguous
+from googlephotos_cleaner.automation import Cleaner, CleanerError, DestructiveActionAmbiguous, PassOutcome
 from googlephotos_cleaner.diagnostics import CheckpointStore, DiagnosticLog, PendingActionStore
 
 
@@ -249,6 +249,7 @@ class BrowserAdapterTests(unittest.TestCase):
                 day_mode=False,
                 pending=pending,
                 discard_ambiguous_media_batches=True,
+                pending_policy="discard",
             ).run()
 
             self.assertEqual(processed, 1)
@@ -402,6 +403,38 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(browser.trashed, [["day"]])
             self.assertIsNone(pending.load())
 
+    def test_dry_run_pending_does_not_poll_browser(self):
+        class DryRunPollSpyBrowser(FakeBrowser):
+            def wait_for_target_absence(self, _label):
+                raise AssertionError("dry-run pending must not poll")
+
+        browser = DryRunPollSpyBrowser([])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending-action.json")
+            pending.save(label="Foto - pending", kind="day", scroll_top=0)
+            cleaner = Cleaner(browser, dry_run=True, pending=pending)
+
+            self.assertEqual(cleaner.run(), 0)
+            self.assertTrue(cleaner.stop_requested)
+            self.assertEqual(cleaner.last_outcome, PassOutcome.PENDING_UNRESOLVED)
+            self.assertIsNotNone(pending.load())
+
+    def test_block_pending_does_not_poll_browser(self):
+        class PollSpyBrowser(FakeBrowser):
+            def wait_for_target_absence(self, _label):
+                raise AssertionError("block policy must not poll")
+
+        browser = PollSpyBrowser([])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending-action.json")
+            pending.save(label="Foto - pending", kind="day", scroll_top=0)
+            cleaner = Cleaner(browser, pending=pending)
+
+            self.assertEqual(cleaner.run(), 0)
+            self.assertTrue(cleaner.stop_requested)
+            self.assertEqual(cleaner.last_outcome, PassOutcome.PENDING_UNRESOLVED)
+            self.assertIsNotNone(pending.load())
+
     def test_pending_target_absent_without_feedback_stays_unresolved(self):
         class AbsentWithoutFeedbackBrowser(FakeBrowser):
             def __init__(self):
@@ -424,9 +457,10 @@ class BrowserAdapterTests(unittest.TestCase):
 
             self.assertEqual(processed, 0)
             self.assertIsNotNone(pending.load())
-            self.assertEqual(browser.wait_calls, 1)
+            self.assertEqual(browser.wait_calls, 0)
             self.assertEqual(browser.trashed, [])
             self.assertTrue(cleaner.stop_requested)
+            self.assertEqual(cleaner.last_outcome, PassOutcome.PENDING_UNRESOLVED)
 
     def test_single_media_fallback_is_journaled_as_media_action(self):
         class SingleMediaBrowser(FakeBrowser):
@@ -465,6 +499,7 @@ class BrowserAdapterTests(unittest.TestCase):
         cleaner.run()
 
         self.assertTrue(cleaner.stop_requested)
+        self.assertEqual(cleaner.last_outcome, PassOutcome.PENDING_UNRESOLVED)
         self.assertEqual(browser.trashed, [["day"]])
 
     def test_confirmed_day_action_resets_timeline_once(self):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from enum import Enum
 from typing import Any, Protocol, Sequence
 
 from .diagnostics import CheckpointStore, DiagnosticLog, PendingActionStore
@@ -14,6 +15,13 @@ class CleanerError(RuntimeError):
 
 class DestructiveActionAmbiguous(CleanerError):
     """Trash action may have happened; never retry it automatically."""
+
+class PassOutcome(str, Enum):
+    CONTINUE = "continue"
+    PASS_DONE = "pass_done"
+    STOP_SAFE = "stop_safe"
+    PENDING_UNRESOLVED = "pending_unresolved"
+    DESTRUCTIVE_AMBIGUOUS = "destructive_ambiguous"
 
 
 class BrowserAdapter(Protocol):
@@ -42,6 +50,8 @@ class Cleaner:
         pending: PendingActionStore | None = None,
         reset_timeline_after_action: bool = True,
         discard_ambiguous_media_batches: bool = False,
+        pending_policy: str = "block",
+        pending_timeout_ms: int = 30000,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be greater than zero")
@@ -53,6 +63,10 @@ class Cleaner:
             raise ValueError("max_idle_scrolls must be greater than zero")
         if max_day_scan_failures <= 0:
             raise ValueError("max_day_scan_failures must be greater than zero")
+        if pending_policy not in {"block", "inspect", "discard"}:
+            raise ValueError("pending_policy must be block, inspect, or discard")
+        if pending_timeout_ms <= 0:
+            raise ValueError("pending_timeout_ms must be greater than zero")
         self.browser = browser
         self.batch_size = batch_size
         self.max_batches = max_batches
@@ -68,6 +82,9 @@ class Cleaner:
         self.discard_ambiguous_media_batches = discard_ambiguous_media_batches
         self.stop_requested = False
         self.reset_timeline_after_action = reset_timeline_after_action
+        self.pending_policy = pending_policy
+        self.pending_timeout_ms = pending_timeout_ms
+        self.last_outcome = PassOutcome.CONTINUE
 
     def _event(self, phase: str, level: str = "INFO", **context: Any) -> None:
         if self.diagnostic is not None:
@@ -95,14 +112,30 @@ class Cleaner:
         self._event("authenticated")
         if self.pending:
             previous = self.pending.load()
+            if previous and self.dry_run:
+                self._event("pending_unresolved", "WARNING", target=previous.get("label"), policy=self.pending_policy)
+                self.stop_requested = True
+                self.last_outcome = PassOutcome.PENDING_UNRESOLVED
+                return 0
+            if previous and self.pending_policy in {"block", "inspect"}:
+                self._event(
+                    "pending_inspected" if self.pending_policy == "inspect" else "pending_unresolved",
+                    "WARNING",
+                    target=previous.get("label"),
+                    policy=self.pending_policy,
+                )
+                self.stop_requested = True
+                self.last_outcome = PassOutcome.PENDING_UNRESOLVED
+                return 0
             if previous and previous.get("kind") == "media_batch":
-                if self.discard_ambiguous_media_batches:
+                if self.discard_ambiguous_media_batches or self.pending_policy == "discard":
                     self.pending.clear()
                     self._event(
                         "pending_batch_discarded",
                         "WARNING",
                         target=previous["label"],
                         count=previous.get("count"),
+                        policy=self.pending_policy,
                     )
                     previous = None
                 else:
@@ -112,6 +145,8 @@ class Cleaner:
                         target=previous["label"],
                         count=previous.get("count"),
                     )
+                    self.stop_requested = True
+                    self.last_outcome = PassOutcome.PENDING_UNRESOLVED
                     return 0
             if previous:
                 target_exists = getattr(self.browser, "target_exists", None)
@@ -136,6 +171,7 @@ class Cleaner:
                             result="absent_without_feedback",
                         )
                         self.stop_requested = True
+                        self.last_outcome = PassOutcome.PENDING_UNRESOLVED
                         return 0
                 elif retry_pending is not None:
                     # A prior destructive result is ambiguous. Do not click Trash
@@ -161,6 +197,7 @@ class Cleaner:
                             result="present_without_feedback",
                         )
                         self.stop_requested = True
+                        self.last_outcome = PassOutcome.PENDING_UNRESOLVED
                         return 0
                 else:
                     wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
@@ -233,6 +270,7 @@ class Cleaner:
                             batch=processed, photos=total_photos, state="ambiguous"
                         )
                     self.stop_requested = True
+                    self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                     raise DestructiveActionAmbiguous(
                         "Trash result is ambiguous; refusing destructive retry"
                     ) from exc
@@ -250,9 +288,11 @@ class Cleaner:
             self._event("checkpoint_saved", batch=processed, photos=total_photos)
             if self.max_batches is not None and processed >= self.max_batches:
                 self.stop_requested = True
+                self.last_outcome = PassOutcome.PASS_DONE
                 self._event("batch_limit", batches=processed, photos=total_photos)
                 return processed
 
+        self.last_outcome = PassOutcome.PASS_DONE
         self._event("batch_limit", batches=processed, photos=total_photos)
         self.logger.info("Reached batch limit: %d", processed)
         return processed
@@ -290,6 +330,7 @@ class Cleaner:
                     scan_failures += 1
                 if scan_failed and scan_failures >= self.max_day_scan_failures:
                     self.stop_requested = True
+                    self.last_outcome = PassOutcome.STOP_SAFE
                     self._event(
                         "day_scan_stopped",
                         "ERROR",
@@ -316,6 +357,7 @@ class Cleaner:
                 if idle_scrolls < self.max_idle_scrolls:
                     continue
                 self._event("timeline_paused", "WARNING", idle_scrolls=idle_scrolls)
+                self.last_outcome = PassOutcome.STOP_SAFE
                 if self.checkpoint:
                     self.checkpoint.save(batch=processed, photos=total_photos, state="idle")
                 return processed
@@ -364,6 +406,7 @@ class Cleaner:
                                 )
                             self._event("day_trash_unresolved", "WARNING", day=day)
                             self.stop_requested = True
+                            self.last_outcome = PassOutcome.PENDING_UNRESOLVED
                             return processed
                         continue
                     if self.pending:
@@ -383,6 +426,7 @@ class Cleaner:
                         "Trash result pending for %s; will reconcile before another click", day
                     )
                     self.stop_requested = True
+                    self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                     return processed
                 self._event("day_trash_completed", day=day)
                 self.logger.info("Moved day %s to Trash", day)
@@ -396,6 +440,8 @@ class Cleaner:
             self._event("day_checkpoint_saved", day=day, days=processed)
             if self.max_batches is not None and processed >= self.max_batches:
                 self.stop_requested = True
+                self.last_outcome = PassOutcome.PASS_DONE
                 self._event("batch_limit", batches=processed, photos=total_photos)
                 return processed
+        self.last_outcome = PassOutcome.PASS_DONE
         return processed
