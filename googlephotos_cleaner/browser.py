@@ -463,7 +463,14 @@ class PlaywrightBrowser:
             "Moved to bin",
         )
         for text in feedback:
-            if self.page.get_by_text(text, exact=False).count() > 0:
+            count = self.page.get_by_text(text, exact=False).count()
+            if getattr(self, "diagnostic", None) is not None:
+                self.diagnostic.event(
+                    "trash_feedback_candidate",
+                    feedback_category=text,
+                    visible_count=count,
+                )
+            if count > 0:
                 return True
         return False
 
