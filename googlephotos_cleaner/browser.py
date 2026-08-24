@@ -741,7 +741,7 @@ class PlaywrightBrowser:
             self.diagnostic.event(
                 "trash_feedback_check",
                 timeout_ms=timeout_ms,
-                check=checks,
+                check=max(checks, 1),
                 final=True,
                 positive_feedback=feedback,
                 feedback_source=self.last_feedback_source,
