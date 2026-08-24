@@ -972,6 +972,27 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             browser.move_selected_to_trash(["photo-1"])
 
+    def test_trash_feedback_check_failure_is_not_success(self):
+        page = Mock()
+        page.get_by_text.side_effect = RuntimeError("feedback query failed")
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertFalse(browser._trash_feedback_visible())
+
+    def test_trash_feedback_check_failure_is_diagnostic_error(self):
+        page = Mock()
+        page.get_by_text.side_effect = RuntimeError("feedback query failed")
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertFalse(browser._trash_feedback_visible())
+
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_check_failed")
+        self.assertEqual(event.kwargs["error_type"], "RuntimeError")
+
     def test_trash_feedback_ignores_hidden_text(self):
         page = Mock()
         hidden = Mock()
