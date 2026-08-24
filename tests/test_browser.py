@@ -1022,6 +1022,24 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             browser.move_selected_to_trash(["photo-1"])
 
+    def test_trash_feedback_candidate_marks_hidden_count_as_dom_candidate(self):
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 2
+        feedback.first = feedback
+        feedback.first.is_visible.return_value = False
+        page.get_by_text.return_value = feedback
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertFalse(browser._trash_feedback_visible())
+
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_candidate")
+        self.assertEqual(event.kwargs["visible_count"], 2)
+        self.assertEqual(event.kwargs["feedback_source"], "dom_candidate_not_visible")
+
     def test_trash_feedback_candidate_logs_visible_count_and_source(self):
         page = Mock()
         feedback = Mock()
@@ -1036,7 +1054,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertTrue(browser._trash_feedback_visible())
 
-        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_candidate")
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_candidate_visible")
         self.assertEqual(event.kwargs["visible_count"], 2)
         self.assertEqual(event.kwargs["feedback_source"], "browser_positive_feedback")
 
