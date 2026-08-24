@@ -1022,12 +1022,35 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             browser.move_selected_to_trash(["photo-1"])
 
+    def test_trash_feedback_candidate_reports_actual_visible_count(self):
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 2
+        feedback.first = feedback
+        feedback.first.is_visible.return_value = False
+        second = Mock()
+        second.is_visible.return_value = True
+        feedback.nth.return_value = second
+        page.get_by_text.return_value = feedback
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._trash_feedback_visible())
+
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_candidate")
+        self.assertEqual(event.kwargs["matched_count"], 2)
+        self.assertEqual(event.kwargs["visible_count"], 1)
+        self.assertEqual(event.kwargs["feedback_source"], "browser_positive_feedback")
+
     def test_trash_feedback_candidate_marks_hidden_count_as_dom_candidate(self):
         page = Mock()
         feedback = Mock()
         feedback.count.return_value = 2
         feedback.first = feedback
         feedback.first.is_visible.return_value = False
+        feedback.nth.return_value = feedback.first
         page.get_by_text.return_value = feedback
         diagnostic = Mock()
         browser = object.__new__(PlaywrightBrowser)
@@ -1037,7 +1060,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertFalse(browser._trash_feedback_visible())
 
         event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_candidate")
-        self.assertEqual(event.kwargs["visible_count"], 2)
+        self.assertEqual(event.kwargs["visible_count"], 0)
         self.assertEqual(event.kwargs["feedback_source"], "dom_candidate_not_visible")
 
     def test_trash_feedback_candidate_logs_visible_count_and_source(self):
