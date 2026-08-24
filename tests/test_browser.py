@@ -1022,6 +1022,23 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             browser.move_selected_to_trash(["photo-1"])
 
+    def test_trash_feedback_candidate_visible_event_follows_candidate_event(self):
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 1
+        feedback.first = feedback
+        feedback.first.is_visible.return_value = True
+        page.get_by_text.return_value = feedback
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._trash_feedback_visible())
+
+        phases = [call.args[0] for call in diagnostic.event.call_args_list]
+        self.assertLess(phases.index("trash_feedback_candidate"), phases.index("trash_feedback_candidate_visible"))
+
     def test_trash_feedback_candidate_reports_actual_visible_count(self):
         page = Mock()
         feedback = Mock()
@@ -1043,6 +1060,23 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(event.kwargs["matched_count"], 2)
         self.assertEqual(event.kwargs["visible_count"], 1)
         self.assertEqual(event.kwargs["feedback_source"], "browser_positive_feedback")
+
+    def test_trash_feedback_candidate_emits_one_event_per_feedback_label(self):
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 0
+        page.get_by_text.return_value = feedback
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertFalse(browser._trash_feedback_visible())
+
+        candidates = [call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_candidate"]
+        self.assertEqual(len(candidates), 5)
+        self.assertTrue(all(call.kwargs["matched_count"] == 0 for call in candidates))
+        self.assertTrue(all(call.kwargs["visible_count"] == 0 for call in candidates))
 
     def test_trash_feedback_candidate_marks_hidden_count_as_dom_candidate(self):
         page = Mock()
