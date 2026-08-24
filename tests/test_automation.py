@@ -101,6 +101,32 @@ class BrowserAdapterTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             cleaner.run()
 
+    def test_trash_completion_event_contains_positive_feedback(self):
+        browser = FakeBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="trash-proof")
+            Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        completed = next(event for event in events if event["phase"] == "trash_completed")
+        self.assertTrue(completed["positive_feedback"])
+        self.assertEqual(completed["result"], "confirmed")
+        self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
+
+    def test_ambiguous_trash_event_includes_sanitized_error(self):
+        browser = AmbiguousBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="ambiguous-proof")
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(browser, day_mode=False, diagnostic=diagnostic).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        ambiguous = next(event for event in events if event["phase"] == "destructive_action_ambiguous")
+        self.assertEqual(ambiguous["error_message"], "result unknown after trash click")
+        self.assertFalse(any(event["phase"] == "trash_completed" for event in events))
+
     def test_dry_run_does_not_move_photos(self):
         browser = FakeBrowser([["old-1"], ["old-2"]])
 
@@ -108,6 +134,58 @@ class BrowserAdapterTests(unittest.TestCase):
 
         self.assertEqual(processed, 2)
         self.assertEqual(browser.trashed, [])
+
+    def test_day_scan_event_contains_attempt_and_target_context(self):
+        class EventBrowser(FakeBrowser):
+            scroll_step = 240
+            scroll_delay_ms = 1500
+
+
+        browser = EventBrowser([("2 Aug", 2)])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="scan-context")
+            Cleaner(browser, day_mode=True, dry_run=True, max_batches=1, diagnostic=diagnostic).run()
+            events = [
+                __import__("json").loads(line)
+                for line in Path(tmp, "run.jsonl").read_text().splitlines()
+            ]
+
+        day_scan = next(event for event in events if event["phase"] == "day_scan")
+        self.assertEqual(day_scan["attempt"], 0)
+        self.assertEqual(day_scan["day"], "2 Aug")
+        started = next(event for event in events if event["phase"] == "run_started")
+        self.assertEqual(started["mode"], "dry-run")
+        self.assertEqual(started["scroll_step"], 240)
+        self.assertEqual(started["pending_timeout_ms"], 30000)
+        self.assertIn("uid", started)
+        self.assertIn("username", started)
+        self.assertEqual(started["max_idle_scrolls"], 5)
+
+    def test_pass_done_is_terminal_without_second_run(self):
+        browser = FakeBrowser([["old-1"]])
+        cleaner = Cleaner(browser, dry_run=True, day_mode=False, max_batches=1)
+
+        first = cleaner.run()
+        second = cleaner.run()
+
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)
+        self.assertEqual(browser.batches, [])
+        self.assertEqual(cleaner.last_outcome, PassOutcome.PASS_DONE)
+
+    def test_run_started_contains_process_and_policy_context(self):
+        browser = FakeBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="context")
+            Cleaner(browser, dry_run=True, day_mode=False, max_batches=1, diagnostic=diagnostic).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        started = next(event for event in events if event["phase"] == "run_started")
+        self.assertIn("pid", started)
+        self.assertIn("ppid", started)
+        self.assertEqual(started["pending_policy"], "block")
+        self.assertEqual(started["pending_timeout_ms"], 30000)
 
     def test_bounded_dry_run_day_pass_requests_stop(self):
         browser = FakeBrowser([("2 Aug", 1), ("1 Aug", 1)])
@@ -310,23 +388,53 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(processed, 1)
         self.assertEqual(browser.advance_count, 1)
 
+    def test_pending_reconciliation_receives_configured_timeout(self):
+        class TimeoutSpyBrowser(FakeBrowser):
+            def delete_selected_day(self):
+                return False
+
+            def wait_for_target_absence(self, _label, timeout_ms=30000):
+                self.timeout_ms = timeout_ms
+                return True
+
+        browser = TimeoutSpyBrowser([("2 Aug", 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending-action.json")
+            processed = Cleaner(
+                browser,
+                day_mode=True,
+                pending=pending,
+                pending_timeout_ms=777,
+            ).run()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(browser.timeout_ms, 777)
+
     def test_pending_day_waits_for_absence_before_continuing(self):
         class DelayedAbsenceBrowser(FakeBrowser):
             def delete_selected_day(self):
                 self.trashed.append(["day"])
                 return False
 
-            def wait_for_target_absence(self, label):
+            def wait_for_target_absence(self, label, *, timeout_ms):
                 self.waited_label = label
+                self.waited_timeout_ms = timeout_ms
                 return True
 
         browser = DelayedAbsenceBrowser([("2 Aug", 1)])
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending-action.json")
-            processed = Cleaner(browser, day_mode=True, pending=pending, max_idle_scrolls=1).run()
+            processed = Cleaner(
+                browser,
+                day_mode=True,
+                pending=pending,
+                pending_timeout_ms=321,
+                max_idle_scrolls=1,
+            ).run()
 
             self.assertEqual(processed, 1)
             self.assertEqual(browser.waited_label, "2 Aug")
+            self.assertEqual(browser.waited_timeout_ms, 321)
             self.assertEqual(browser.trashed, [["day"]])
             self.assertIsNone(pending.load())
 
@@ -351,7 +459,7 @@ class BrowserAdapterTests(unittest.TestCase):
             def target_exists(self, _label):
                 return True
 
-            def wait_for_target_absence(self, _label):
+            def wait_for_target_absence(self, _label, *, timeout_ms):
                 return False
 
         browser = PresentWithoutFeedbackBrowser([])
@@ -371,7 +479,7 @@ class BrowserAdapterTests(unittest.TestCase):
             def retry_pending_action(self, _label):
                 raise AssertionError("ambiguous Trash must not be retried automatically")
 
-            def wait_for_target_absence(self, _label):
+            def wait_for_target_absence(self, _label, *, timeout_ms):
                 return False
 
         browser = RetrySpyBrowser([])
@@ -389,7 +497,7 @@ class BrowserAdapterTests(unittest.TestCase):
                 self.trashed.append(["day"])
                 return False
 
-            def wait_for_target_absence(self, _label):
+            def wait_for_target_absence(self, _label, timeout_ms=30000):
                 return True
 
         browser = PendingThenAbsentBrowser([("2 Aug", 1)])

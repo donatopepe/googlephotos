@@ -9,11 +9,24 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from getpass import getuser
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-_SENSITIVE_KEYS = {"password", "cookie", "cookies", "token", "authorization", "secret"}
+_SENSITIVE_KEYS = {
+    "password",
+    "cookie",
+    "cookies",
+    "token",
+    "authorization",
+    "secret",
+    "html",
+    "content",
+    "inner_html",
+    "page_content",
+    "dom_content",
+}
 
 
 def redact_url(url: str | None) -> str | None:
@@ -53,6 +66,15 @@ def _sanitize(value: Any, key: str | None = None) -> Any:
         return [_sanitize(item) for item in value]
     return value
 
+
+def process_context() -> dict[str, Any]:
+    """Return safe process identity fields; never inspect credentials or page data."""
+    return {
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+        "uid": os.getuid() if hasattr(os, "getuid") else None,
+        "username": getuser(),
+    }
 
 class DiagnosticLog:
     def __init__(self, path: Path, *, run_id: str | None = None) -> None:

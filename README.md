@@ -61,7 +61,7 @@ Esempio prudente:
 .venv/bin/python main.py --dry-run --max-batches 1 --batch-size 10
 ```
 
-Log vengono scritti su stdout e `data/run.log`. Diagnostica strutturata JSONL viene scritta in `data/run.jsonl`. In caso di errore, screenshot e HTML vengono salvati in `data/diagnostics/<run_id>/`; URL vengono redatti senza query e nessun cookie/password viene scritto. `data/checkpoint.json` viene aggiornato atomicamente dopo ogni batch.
+Log vengono scritti su stdout e `data/run.log`. Diagnostica strutturata JSONL dettagliata viene scritta in `data/run.jsonl`: include PID/lock/profilo, comando e configurazione, controlli autenticazione, locator/selettori, conteggi DOM prima/dopo scroll, wheel/delay, stato aria prima/dopo selezione, click/dialog/conferma Trash, feedback positivo, riconciliazione pending, checkpoint ed esito terminale. In caso di errore, screenshot e HTML vengono salvati in `data/diagnostics/<run_id>/`; URL vengono redatti senza query e nessun cookie/password viene scritto. `data/checkpoint.json` viene aggiornato atomicamente dopo ogni batch.
 
 Prima del Cestino viene scritto `data/pending-action.json` con label non segreta del target e posizione timeline. La scomparsa del target dal DOM o l'assenza della checkbox non dimostrano che Google Foto abbia completato l'azione: il pending resta conservato finché non compare feedback positivo. L'avvio predefinito (`--pending-action block`) ispeziona il pending e termina senza nuovo click né attesa lunga. `--pending-action inspect` registra l'ispezione e termina; `--pending-action discard` cancella il journal solo come autorizzazione esplicita, senza dichiarare Trash completato. `--pending-timeout-ms` limita ogni riconciliazione esplicita.
 
