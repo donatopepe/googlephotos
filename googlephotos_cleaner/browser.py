@@ -568,6 +568,7 @@ class PlaywrightBrowser:
 
     def _trash_feedback_visible(self) -> bool:
         """Require positive Google Photos completion feedback, not DOM absence alone."""
+        self.last_feedback_source = None
         feedback = (
             "Moved to trash",
             "Moved to Trash",
@@ -599,6 +600,7 @@ class PlaywrightBrowser:
             if count > 0:
                 try:
                     if feedback_locator.first.is_visible():
+                        self.last_feedback_source = "browser_positive_feedback"
                         return True
                 except (AttributeError, TypeError):
                     return True
@@ -691,6 +693,7 @@ class PlaywrightBrowser:
                     timeout_ms=timeout_ms,
                     check=checks,
                     positive_feedback=feedback,
+                    feedback_source=self.last_feedback_source,
                 )
             if feedback:
                 return True
