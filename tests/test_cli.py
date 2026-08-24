@@ -38,6 +38,13 @@ class MainFlowTests(unittest.TestCase):
         self.assertEqual(phases.count("cleaner_stopped"), 1)
         self.assertEqual(phases.count("run_finished"), 1)
         self.assertNotIn("cleaner_terminal_state", phases)
+        stopped = next(event for event in events if event["phase"] == "cleaner_stopped")
+        finished = next(event for event in events if event["phase"] == "run_finished")
+        for event in (stopped, finished):
+            self.assertIn("pid", event)
+            self.assertIn("pending_path", event)
+            self.assertIn("checkpoint_path", event)
+            self.assertIn("outcome", event)
 
     def test_main_writes_finished_outcome_on_keyboard_interrupt(self):
         import json
@@ -110,6 +117,14 @@ class MainFlowTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
 
+
+class HandoffTests(unittest.TestCase):
+    def test_handoff_records_current_terminal_commit(self):
+        handoff = Path("/home/public/googlephotos/HANDOFF-2026-08-24-googlephotos-scan.md")
+        text = handoff.read_text(encoding="utf-8")
+
+        self.assertIn("51cfcde", text)
+        self.assertIn("Nessun merge su `main`", text)
 
 class CliTests(unittest.TestCase):
     def test_parser_has_safe_defaults(self):

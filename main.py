@@ -35,6 +35,7 @@ def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pen
         pending_exists=pending.path.exists(),
         checkpoint_path=str(checkpoint.path),
         checkpoint_exists=checkpoint.path.exists(),
+        **process_context(),
     )
 
 
