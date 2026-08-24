@@ -267,12 +267,17 @@ class Cleaner:
                 wait_for_timeline = getattr(self.browser, "wait_for_current_timeline", None)
                 if wait_for_timeline is not None:
                     wait_for_timeline()
-                if idle_scrolls < self.max_idle_scrolls:
-                    continue
                 advance_timeline = getattr(self.browser, "advance_timeline", None)
-                if advance_timeline is not None and advance_timeline():
+                should_advance = (
+                    scan_failed
+                    or (processed == 0 and idle_scrolls == 1)
+                    or idle_scrolls >= self.max_idle_scrolls
+                )
+                if should_advance and advance_timeline is not None and advance_timeline():
                     self._event("timeline_advanced", idle_scrolls=idle_scrolls)
                     idle_scrolls = 0
+                    continue
+                if idle_scrolls < self.max_idle_scrolls:
                     continue
                 self._event("timeline_paused", "WARNING", idle_scrolls=idle_scrolls)
                 if self.checkpoint:
