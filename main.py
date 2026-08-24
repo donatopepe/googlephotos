@@ -56,6 +56,10 @@ def run(argv=None) -> int:
         # never reopen Chrome or move the timeline.
         while True:
             cleaner.run()
+            if cleaner.stop_requested:
+                logger.warning("Cleaner requested safe stop")
+                diagnostic.event("cleaner_stopped", "WARNING")
+                return 0
             # Keep one browser/context alive; recoverable scan stalls are handled
             # inside Cleaner and must not turn into a five-minute inspection sleep.
             try:

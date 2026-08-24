@@ -65,6 +65,7 @@ class Cleaner:
         self.max_day_scan_failures = max_day_scan_failures
         self.pending = pending
         self.discard_ambiguous_media_batches = discard_ambiguous_media_batches
+        self.stop_requested = False
 
     def _event(self, phase: str, level: str = "INFO", **context: Any) -> None:
         if self.diagnostic is not None:
@@ -252,6 +253,7 @@ class Cleaner:
                 if scan_failed:
                     scan_failures += 1
                 if scan_failed and scan_failures >= self.max_day_scan_failures:
+                    self.stop_requested = True
                     self._event(
                         "day_scan_stopped",
                         "ERROR",
