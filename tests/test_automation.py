@@ -290,6 +290,29 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(browser.recover_calls, 1)
         self.assertEqual(browser.trashed, [["day"]])
 
+    def test_pending_inspect_stops_without_retrying_destructive_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            browser = FakeBrowser([("new day", 1)])
+
+            cleaner = Cleaner(browser, day_mode=True, pending=pending, pending_policy="inspect")
+            self.assertEqual(cleaner.run(), 0)
+            self.assertEqual(cleaner.last_outcome, PassOutcome.PENDING_UNRESOLVED)
+            self.assertEqual(browser.trashed, [])
+            self.assertIsNotNone(pending.load())
+
+    def test_pending_policy_block_does_not_call_retry_adapter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            browser = FakeBrowser([("new day", 1)])
+            browser.retry_pending_action = lambda _label: self.fail("automatic retry forbidden")
+
+            cleaner = Cleaner(browser, day_mode=True, pending=pending, pending_policy="block")
+            self.assertEqual(cleaner.run(), 0)
+            self.assertEqual(cleaner.last_outcome, PassOutcome.PENDING_UNRESOLVED)
+
     def test_ambiguous_media_batch_is_journaled_and_blocks_followup_trash(self):
         class AmbiguousBatchBrowser(FakeBrowser):
             def move_selected_to_trash(self, _media_ids):
