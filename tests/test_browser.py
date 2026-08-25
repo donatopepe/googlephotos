@@ -536,6 +536,39 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             ('[role="checkbox"][aria-checked="false"]',),
         )
 
+    def test_trash_feedback_accepts_quantity_popup_variants_and_logs_count_only(self):
+        from unittest.mock import Mock
+        for phrase, expected in (("Spostate 8 foto nel Cestino", 8), ("Moved 8 photos to Trash", 8)):
+            page = Mock()
+            popup = Mock()
+            popup.count.return_value = 1
+            popup.first = popup
+            popup.first.is_visible.return_value = True
+            page.get_by_text.side_effect = lambda text, exact=False, phrase=phrase: popup if text == phrase else Mock(count=lambda: 0)
+            diagnostic = Mock()
+            browser = object.__new__(PlaywrightBrowser)
+            browser.page = page
+            browser.diagnostic = diagnostic
+
+            self.assertTrue(browser._trash_feedback_visible())
+            event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_popup")
+            self.assertEqual(event.kwargs["moved_count"], expected)
+            self.assertEqual(event.kwargs["popup_kind"], "bottom_left_toast")
+            self.assertNotIn("raw_text", event.kwargs)
+
+    def test_trash_feedback_rejects_visible_confirmation_without_quantity(self):
+        from unittest.mock import Mock
+        page = Mock()
+        popup = Mock()
+        popup.count.return_value = 1
+        popup.first = popup
+        popup.first.is_visible.return_value = True
+        page.get_by_text.side_effect = lambda text, exact=False: popup if text == "Spostate foto nel Cestino" else Mock(count=lambda: 0)
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertFalse(browser._trash_feedback_visible())
+
     def test_trash_feedback_reports_candidate_text_and_polling_budget(self):
         page = Mock()
         feedback = Mock()
@@ -1095,7 +1128,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertFalse(browser._trash_feedback_visible())
 
         candidates = [call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_candidate"]
-        self.assertEqual(len(candidates), 5)
+        self.assertEqual(len(candidates), 7)
         self.assertTrue(all(call.kwargs["matched_count"] == 0 for call in candidates))
         self.assertTrue(all(call.kwargs["visible_count"] == 0 for call in candidates))
 
@@ -1539,8 +1572,8 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
     def test_wait_for_target_absence_polls_for_positive_feedback_without_clicking(self):
         page = Mock()
-        # Five feedback strings are checked before each polling wait.
-        page.get_by_text.return_value.count.side_effect = [0, 0, 0, 0, 0, 1]
+        # Feedback labels are checked before each polling wait.
+        page.get_by_text.return_value.count.side_effect = [0] * 7 + [1]
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
 
