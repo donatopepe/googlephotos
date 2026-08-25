@@ -336,7 +336,8 @@ class Cleaner:
                         self._event(
                             "pending_reconciled",
                             target=previous["label"],
-                            result="absent",
+                            result="reconciled",
+                            positive_feedback=True,
                             feedback_source=feedback_source,
                         )
                     else:
@@ -345,7 +346,8 @@ class Cleaner:
                             "WARNING",
                             target=previous["label"],
                             result="absent_without_feedback",
-                            feedback_source=feedback_source,
+                            positive_feedback=False,
+                            feedback_source=None,
                         )
                         self.stop_requested = True
                         self.last_outcome = PassOutcome.PENDING_UNRESOLVED
@@ -366,7 +368,8 @@ class Cleaner:
                         self._event(
                             "pending_reconciled",
                             target=previous["label"],
-                            result="present_after_wait",
+                            result="reconciled",
+                            positive_feedback=True,
                             feedback_source=feedback_source,
                         )
                     else:
@@ -375,7 +378,8 @@ class Cleaner:
                             "WARNING",
                             target=previous["label"],
                             result="present_without_feedback",
-                            feedback_source=feedback_source,
+                            positive_feedback=False,
+                            feedback_source=None,
                         )
                         self.stop_requested = True
                         self.last_outcome = PassOutcome.PENDING_UNRESOLVED
@@ -394,7 +398,8 @@ class Cleaner:
                         self._event(
                             "pending_reconciled",
                             target=previous["label"],
-                            result="absent_after_wait",
+                            result="reconciled",
+                            positive_feedback=True,
                             feedback_source=feedback_source,
                         )
                     else:
@@ -403,7 +408,8 @@ class Cleaner:
                             "WARNING",
                             target=previous["label"],
                             result="present_without_feedback",
-                            feedback_source=feedback_source,
+                            positive_feedback=False,
+                            feedback_source=None,
                         )
                         self.stop_requested = True
                         self.last_outcome = PassOutcome.PENDING_UNRESOLVED
