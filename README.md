@@ -6,7 +6,7 @@ Tool Python + Playwright che apre browser visibile e sposta nel Cestino le foto 
 
 Operazione distruttiva. Il tool sposta foto nel Cestino Google Foto. Google normalmente conserva elementi nel Cestino per un periodo limitato; non usare questo progetto se vuoi una conferma per ogni eliminazione. Il tool non svuota il Cestino.
 
-Usare prima dry-run e verificare account/browser. Non eseguire su account sbagliato.
+Usare prima dry-run e verificare account/browser. Non eseguire su account sbagliato. Modalità delete resta bloccata finché eventuali pending o checkpoint ambigui non vengono riconciliati con feedback positivo Google Photos o scartati esplicitamente.
 
 ## Installazione
 
@@ -29,8 +29,19 @@ Si apre automaticamente browser visibile su `https://photos.google.com/login`. C
 
 ## Cancellazione automatica
 
+Prima controllare stato processo, lock, pending e checkpoint:
+
 ```bash
-.venv/bin/python main.py
+ps -p "$(cat data/googlephotos.pid 2>/dev/null)" -o pid=,user=,args= 2>/dev/null || true
+ test -e data/browser-profile/.googlephotos.lock && echo LOCK_PRESENT || echo LOCK_ABSENT
+ test -e data/pending-action.json && echo PENDING_PRESENT || echo PENDING_ABSENT
+ python3 -c 'import json; print(json.load(open("data/checkpoint.json")))' 2>/dev/null || true
+```
+
+Eseguire delete solo con profilo posseduto da `rdpuser`, lock assente e nessun pending non risolto:
+
+```bash
+runuser -u rdpuser -- env HOME=/home/rdpuser USER=rdpuser LOGNAME=rdpuser DISPLAY=:10 XAUTHORITY=/home/rdpuser/.Xauthority .venv/bin/python main.py
 ```
 
 Nessun prompt per foto. Per fermare, usa `Ctrl+C`; processo termina senza svuotare il Cestino.
@@ -61,7 +72,7 @@ Esempio prudente:
 .venv/bin/python main.py --dry-run --max-batches 1 --batch-size 10
 ```
 
-Log vengono scritti su stdout e `data/run.log`. Diagnostica strutturata JSONL dettagliata viene scritta in `data/run.jsonl`: include PID/lock/profilo, comando e configurazione, controlli autenticazione, locator/selettori, conteggi DOM prima/dopo scroll, wheel/delay, stato aria prima/dopo selezione, click/dialog/conferma Trash, feedback positivo, riconciliazione pending, checkpoint ed esito terminale. In caso di errore, screenshot e HTML vengono salvati in `data/diagnostics/<run_id>/`; URL vengono redatti senza query e nessun cookie/password viene scritto. `data/checkpoint.json` viene aggiornato atomicamente dopo ogni batch.
+Log vengono scritti su stdout e `data/run.log`. Diagnostica strutturata JSONL dettagliata viene scritta in `data/run.jsonl`: include PID/lock/profilo, comando e configurazione, controlli autenticazione, locator/selettori, conteggi DOM prima/dopo scroll, wheel/delay, stato aria prima/dopo selezione, click/dialog/conferma Trash, feedback positivo, riconciliazione pending, checkpoint ed esito terminale. In caso di errore, screenshot e HTML vengono salvati in `data/diagnostics/<run_id>/`; URL vengono redatti senza query e nessun cookie/password viene scritto. `data/checkpoint.json` viene aggiornato atomicamente dopo ogni batch. Stati terminali includono `bounded_stop`, `completed`, `idle`, `scan_failed`, `pending` e `ambiguous`; un vecchio checkpoint `state=running` senza `run_id` viene classificato `stale` e non viene ripreso automaticamente.
 
 Prima del Cestino viene scritto `data/pending-action.json` con label non segreta del target e posizione timeline. La scomparsa del target dal DOM o l'assenza della checkbox non dimostrano che Google Foto abbia completato l'azione: il pending resta conservato finché non compare feedback positivo. L'avvio predefinito (`--pending-action block`) ispeziona il pending e termina senza nuovo click né attesa lunga. `--pending-action inspect` registra l'ispezione e termina; `--pending-action discard` cancella il journal solo come autorizzazione esplicita, senza dichiarare Trash completato. `--pending-timeout-ms` limita ogni riconciliazione esplicita.
 
