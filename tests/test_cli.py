@@ -57,6 +57,41 @@ class MainFlowTests(unittest.TestCase):
             self.assertIn("profile_dir", event)
             self.assertIn("profile_lock_path", event)
 
+    def test_main_failure_terminal_events_have_non_proof_evidence(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            def close(self):
+                pass
+
+        class Cleaner:
+            last_outcome = type("Outcome", (), {"value": "destructive_ambiguous"})()
+            stop_requested = True
+            def __init__(self, *args, **kwargs):
+                self.diagnostic = kwargs["diagnostic"]
+            def run(self):
+                raise RuntimeError("ambiguous")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()), patch.object(main, "Cleaner", Cleaner):
+                self.assertEqual(main.run(["--dry-run", "--exit-on-error", "--log-file", str(log), "--profile-dir", str(Path(tmp) / "profile")]), 1)
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+
+        failed = next(event for event in events if event["phase"] == "run_failed")
+        for event in (failed, next(event for event in events if event["phase"] == "cleaner_stopped"), next(event for event in events if event["phase"] == "run_finished")):
+            self.assertIn("result", event)
+            self.assertIn("positive_feedback", event)
+            self.assertIn("feedback_source", event)
+            self.assertFalse(event["positive_feedback"])
+            self.assertIsNone(event["feedback_source"])
+
     def test_main_writes_finished_outcome_on_keyboard_interrupt(self):
         import json
         import main

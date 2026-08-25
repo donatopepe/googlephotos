@@ -437,7 +437,11 @@ class Cleaner:
                             attempts=attempt + 1,
                             error_type=type(exc).__name__,
                             error_message=str(exc),
+                            result="scan_failed",
+                            positive_feedback=False,
+                            feedback_source=None,
                         )
+                        self._checkpoint(batch=processed, photos=total_photos, state="scan_failed", reason="max_retries")
                         raise CleanerError("Scan failed after bounded retries") from exc
                     self._recover(attempt + 1, exc)
 
