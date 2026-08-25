@@ -610,6 +610,51 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(cleaner.run(), 0)
             self.assertEqual(cleaner.last_outcome, PassOutcome.PENDING_UNRESOLVED)
 
+    def test_pending_media_discard_event_is_not_reconciliation_proof(self):
+        class MediaBrowser(FakeBrowser):
+            last_feedback_source = None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="batch:1", kind="media_batch", scroll_top=0, count=2)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-discard")
+            Cleaner(
+                MediaBrowser([]),
+                pending=pending,
+                diagnostic=diagnostic,
+                pending_policy="discard",
+                discard_ambiguous_media_batches=True,
+            ).run()
+
+            self.assertIsNone(pending.load())
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            discarded = next(event for event in events if event["phase"] == "pending_discarded_manual")
+            self.assertFalse(discarded["positive_feedback"])
+            self.assertIsNone(discarded["feedback_source"])
+            self.assertEqual(discarded["result"], "discarded_without_reconciliation")
+
+    def test_pending_batch_discard_specific_event_contains_non_proof_fields(self):
+        class MediaBrowser(FakeBrowser):
+            last_feedback_source = None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="batch:1", kind="media_batch", scroll_top=0, count=2)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-batch-discard")
+            Cleaner(
+                MediaBrowser([]),
+                pending=pending,
+                diagnostic=diagnostic,
+                pending_policy="discard",
+                discard_ambiguous_media_batches=True,
+            ).run()
+
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            discarded = next(event for event in events if event["phase"] == "pending_discarded_manual")
+            self.assertFalse(discarded["positive_feedback"])
+            self.assertIsNone(discarded["feedback_source"])
+            self.assertEqual(discarded["result"], "discarded_without_reconciliation")
+
     def test_ambiguous_media_batch_is_journaled_and_blocks_followup_trash(self):
         class AmbiguousBatchBrowser(FakeBrowser):
             def move_selected_to_trash(self, _media_ids):
