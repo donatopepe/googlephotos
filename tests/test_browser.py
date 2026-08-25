@@ -536,6 +536,26 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             ('[role="checkbox"][aria-checked="false"]',),
         )
 
+    def test_trash_feedback_reports_candidate_text_and_polling_budget(self):
+        page = Mock()
+        feedback = Mock()
+        feedback.count.return_value = 1
+        feedback.first = feedback
+        feedback.first.is_visible.return_value = True
+        page.get_by_text.return_value = feedback
+        page.wait_for_timeout = Mock()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._wait_for_trash_feedback(timeout_ms=5000))
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_check" and call.kwargs.get("final"))
+        self.assertEqual(event.kwargs["feedback_source"], "browser_positive_feedback")
+        self.assertEqual(event.kwargs["feedback_category"], "Moved to trash")
+        self.assertIn("elapsed_ms", event.kwargs)
+        self.assertIn("remaining_ms", event.kwargs)
+
     def test_target_absence_requires_positive_trash_feedback(self):
         page = Mock()
         page.get_by_role.return_value.count.return_value = 0
