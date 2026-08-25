@@ -150,7 +150,7 @@ class CheckpointStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def load(self) -> dict[str, Any] | None:
+    def load(self, *, current_run_id: str | None = None) -> dict[str, Any] | None:
         if not self.path.exists():
             return None
         try:
@@ -159,10 +159,17 @@ class CheckpointStore:
             return None
         if not isinstance(payload, dict):
             return None
-        if payload.get("state") == "running" and not payload.get("run_id"):
+        if payload.get("state") == "running" and (
+            not payload.get("run_id")
+            or (current_run_id is not None and payload.get("run_id") != current_run_id)
+        ):
             payload = dict(payload)
             payload["state"] = "stale"
-            payload["reason"] = "legacy_running_without_run_identity"
+            payload["reason"] = (
+                "legacy_running_without_run_identity"
+                if not payload.get("run_id")
+                else "run_identity_mismatch"
+            )
             payload["resumable"] = False
         return payload
 
