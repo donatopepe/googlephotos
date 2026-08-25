@@ -242,6 +242,37 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(completed["result"], "confirmed")
         self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
 
+    def test_pending_reconciliation_does_not_clear_without_positive_source(self):
+        class PendingBrowser(FakeBrowser):
+            last_feedback_source = None
+            def target_exists(self, _label):
+                return False
+            def wait_for_target_absence(self, _label, timeout_ms):
+                return True
+
+        browser = PendingBrowser([])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="Foto - pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-source")
+            Cleaner(browser, pending=pending, diagnostic=diagnostic, pending_policy="block").run()
+
+            self.assertIsNotNone(pending.load())
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            self.assertTrue(any(event["phase"] == "pending_unresolved" for event in events))
+
+    def test_pending_block_records_reconciliation_was_not_attempted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-skip")
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block").run()
+
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            skipped = next(event for event in events if event["phase"] == "pending_reconciliation_skipped")
+            self.assertEqual(skipped["reason"], "policy_blocks_automatic_reconciliation")
+            self.assertIsNone(skipped["feedback_source"])
+
     def test_ambiguous_trash_event_includes_sanitized_error(self):
         browser = AmbiguousBrowser([["old-1"]])
         with tempfile.TemporaryDirectory() as tmp:
@@ -458,6 +489,26 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(processed, 1)
         self.assertEqual(browser.recover_calls, 1)
         self.assertEqual(browser.trashed, [["day"]])
+
+    def test_pending_reconciliation_positive_source_clears_journal(self):
+        class ReconciledBrowser(FakeBrowser):
+            last_feedback_source = "browser_positive_feedback"
+            def target_exists(self, _label):
+                return False
+            def wait_for_target_absence(self, _label, timeout_ms):
+                return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            browser = ReconciledBrowser([])
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-positive")
+            cleaner = Cleaner(browser, pending=pending, diagnostic=diagnostic, pending_policy="block")
+            cleaner.run()
+            self.assertIsNotNone(pending.load())
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            self.assertFalse(any(event["phase"] == "pending_reconciled" for event in events))
+            self.assertTrue(any(event["phase"] == "pending_unresolved" for event in events))
 
     def test_pending_inspect_stops_without_retrying_destructive_action(self):
         with tempfile.TemporaryDirectory() as tmp:
