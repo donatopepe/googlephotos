@@ -128,6 +128,19 @@ class BrowserAdapterTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             Cleaner(browser, max_retries=4).run()
 
+    def test_running_checkpoint_is_marked_stale_when_run_identity_is_not_current(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            checkpoint.save(batch=2, photos=3, state="running", reason="scan_started", run_id="different-run")
+            diagnostic = DiagnosticLog(Path(tmp, "run.jsonl"), run_id="current-run")
+            cleaner = Cleaner(FakeBrowser([]), day_mode=False, checkpoint=checkpoint, diagnostic=diagnostic)
+            self.assertEqual(cleaner.run(), 0)
+            self.assertEqual(cleaner.last_outcome.value, "stop_safe")
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            stale = next(event for event in events if event["phase"] == "checkpoint_stale")
+            self.assertEqual(stale["reason"], "run_identity_mismatch")
+            self.assertFalse(stale["resumable"])
+
     def test_scan_failure_saves_terminal_checkpoint_context(self):
         class FailedBrowser(FakeBrowser):
             def select_visible_batch(self, batch_size):

@@ -189,7 +189,9 @@ class Cleaner:
             return 0
         self.stop_requested = False
         if self.checkpoint is not None:
-            checkpoint = self.checkpoint.load()
+            checkpoint = self.checkpoint.load(
+                current_run_id=getattr(self.diagnostic, "run_id", None),
+            )
             if checkpoint and checkpoint.get("state") == "stale":
                 self.stop_requested = True
                 self.last_outcome = PassOutcome.STOP_SAFE

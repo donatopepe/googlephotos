@@ -124,6 +124,16 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(loaded["reason"], "legacy_running_without_run_identity")
             self.assertFalse(loaded["resumable"])
 
+    def test_checkpoint_load_marks_foreign_running_state_as_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.json"
+            path.write_text(json.dumps({"batch": 1, "photos": 1, "state": "running", "run_id": "other-run"}))
+            checkpoint = CheckpointStore(path)
+            loaded = checkpoint.load(current_run_id="current-run")
+            self.assertEqual(loaded["state"], "stale")
+            self.assertEqual(loaded["reason"], "run_identity_mismatch")
+            self.assertFalse(loaded["resumable"])
+
     def test_checkpoint_is_written_atomically_without_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "checkpoint.json"
