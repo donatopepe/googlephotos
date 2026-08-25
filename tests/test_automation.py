@@ -7,6 +7,8 @@ from googlephotos_cleaner.diagnostics import CheckpointStore, DiagnosticLog, Pen
 
 
 class FakeBrowser:
+    last_feedback_source = "browser_positive_feedback"
+
     def __init__(self, batches):
         self.batches = list(batches)
         self.days = []
@@ -101,16 +103,30 @@ class BrowserAdapterTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             cleaner.run()
 
-    def test_day_completion_event_keeps_null_feedback_source_without_observer_proof(self):
-        browser = FakeBrowser([("2 Aug", 1)])
+    def test_day_completion_with_missing_feedback_source_is_ambiguous(self):
+        class NoSourceBrowser(FakeBrowser):
+            last_feedback_source = None
+
+        browser = NoSourceBrowser([("2 Aug", 1)])
         with tempfile.TemporaryDirectory() as tmp:
-            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-source-null")
-            Cleaner(browser, day_mode=True, diagnostic=diagnostic, max_batches=1).run()
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-source-required")
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(browser, day_mode=True, diagnostic=diagnostic, max_batches=1).run()
             import json
             events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
 
-        completed = next(event for event in events if event["phase"] == "day_trash_completed")
-        self.assertIsNone(completed["feedback_source"])
+        ambiguous = next(event for event in events if event["phase"] == "destructive_action_ambiguous")
+        self.assertIn("feedback source", ambiguous["error_message"].lower())
+
+    def test_day_completion_event_keeps_null_feedback_source_without_observer_proof(self):
+        class SourceOnlyBrowser(FakeBrowser):
+            last_feedback_source = None
+
+        browser = SourceOnlyBrowser([("2 Aug", 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-source-null")
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(browser, day_mode=True, diagnostic=diagnostic, max_batches=1).run()
 
     def test_day_completion_event_contains_observer_feedback_source(self):
         class DayBrowser(FakeBrowser):
@@ -142,16 +158,30 @@ class BrowserAdapterTests(unittest.TestCase):
         completed = next(event for event in events if event["phase"] == "trash_completed")
         self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
 
-    def test_media_completion_event_keeps_null_source_without_browser_proof(self):
-        browser = FakeBrowser([["old-1"]])
+    def test_media_completion_with_missing_feedback_source_is_ambiguous(self):
+        class NoSourceBrowser(FakeBrowser):
+            last_feedback_source = None
+
+        browser = NoSourceBrowser([["old-1"]])
         with tempfile.TemporaryDirectory() as tmp:
-            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-source-null")
-            Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-source-required")
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
             import json
             events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
 
-        completed = next(event for event in events if event["phase"] == "trash_completed")
-        self.assertIsNone(completed["feedback_source"])
+        ambiguous = next(event for event in events if event["phase"] == "destructive_action_ambiguous")
+        self.assertIn("feedback source", ambiguous["error_message"].lower())
+
+    def test_media_completion_event_keeps_null_source_without_browser_proof(self):
+        class SourceOnlyBrowser(FakeBrowser):
+            last_feedback_source = None
+
+        browser = SourceOnlyBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-source-null")
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
 
     def test_trash_completion_event_contains_positive_feedback(self):
         browser = FakeBrowser([["old-1"]])
@@ -164,7 +194,7 @@ class BrowserAdapterTests(unittest.TestCase):
         completed = next(event for event in events if event["phase"] == "trash_completed")
         self.assertTrue(completed["positive_feedback"])
         self.assertEqual(completed["result"], "confirmed")
-        self.assertIsNone(completed["feedback_source"])
+        self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
 
     def test_ambiguous_trash_event_includes_sanitized_error(self):
         browser = AmbiguousBrowser([["old-1"]])
