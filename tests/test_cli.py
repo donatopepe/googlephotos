@@ -41,6 +41,12 @@ class MainFlowTests(unittest.TestCase):
         self.assertNotIn("cleaner_terminal_state", phases)
         stopped = next(event for event in events if event["phase"] == "cleaner_stopped")
         finished = next(event for event in events if event["phase"] == "run_finished")
+        self.assertFalse(stopped["positive_feedback"])
+        self.assertIsNone(stopped["feedback_source"])
+        self.assertEqual(stopped["result"], "terminal_summary")
+        self.assertFalse(finished["positive_feedback"])
+        self.assertIsNone(finished["feedback_source"])
+        self.assertEqual(finished["result"], "run_finished")
         for event in (stopped, finished):
             self.assertIn("pid", event)
             self.assertIn("pending_path", event)

@@ -40,6 +40,9 @@ def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pen
         profile_lock_owner_pid=getattr(getattr(browser, "profile_lock", None), "pid", None) if browser is not None else None,
         profile_lock_owned=getattr(getattr(browser, "profile_lock", None), "acquired", None) if browser is not None else None,
         browser_cleanup=browser_cleanup,
+        result="terminal_summary",
+        positive_feedback=False,
+        feedback_source=None,
         **process_context(),
     )
 
@@ -201,6 +204,9 @@ def run(argv=None) -> int:
             profile_lock_owner_pid=getattr(getattr(browser, "profile_lock", None), "pid", None) if browser is not None else None,
             profile_lock_owned=getattr(getattr(browser, "profile_lock", None), "acquired", None) if browser is not None else None,
             browser_cleanup=browser_cleanup,
+            result="run_finished",
+            positive_feedback=False,
+            feedback_source=None,
         )
 
 
