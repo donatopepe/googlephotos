@@ -77,6 +77,24 @@ class AmbiguousBrowser(FakeBrowser):
 
 
 class BrowserAdapterTests(unittest.TestCase):
+    def test_cleaner_terminal_state_events_have_non_proof_fields(self):
+        terminal_cases = [
+            ("pending", {"pending_exists": True}),
+            ("ambiguous", {"pending_exists": True}),
+        ]
+        for outcome, expected in terminal_cases:
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as tmp:
+                diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id=f"terminal-{outcome}")
+                cleaner = Cleaner(FakeBrowser([]), dry_run=True, diagnostic=diagnostic)
+                cleaner.last_outcome = PassOutcome.PENDING_UNRESOLVED if outcome == "pending" else PassOutcome.DESTRUCTIVE_AMBIGUOUS
+                cleaner.stop_requested = True
+                cleaner._event("cleaner_terminal_state", "WARNING", outcome=outcome, stop_requested=True, **expected)
+                events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+                terminal = events[-1]
+                self.assertFalse(terminal["positive_feedback"])
+                self.assertIsNone(terminal["feedback_source"])
+                self.assertEqual(terminal["result"], "terminal_state")
+
     def test_cleaner_reentry_terminal_event_has_non_proof_fields(self):
         cleaner = Cleaner(FakeBrowser([]), dry_run=True)
         cleaner.last_outcome = PassOutcome.PASS_DONE
