@@ -161,13 +161,16 @@ class CheckpointStore:
             return None
         if payload.get("state") == "running" and (
             not payload.get("run_id")
-            or (current_run_id is not None and payload.get("run_id") != current_run_id)
+            or current_run_id is None
+            or payload.get("run_id") != current_run_id
         ):
             payload = dict(payload)
             payload["state"] = "stale"
             payload["reason"] = (
                 "legacy_running_without_run_identity"
                 if not payload.get("run_id")
+                else "run_identity_required"
+                if current_run_id is None
                 else "run_identity_mismatch"
             )
             payload["resumable"] = False
