@@ -275,6 +275,85 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(completed["result"], "confirmed")
         self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
 
+    def test_pending_observation_events_always_have_evidence_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-evidence-contract")
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="inspect").run()
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            phases = {"pending_loaded", "pending_reconciliation_skipped", "pending_inspected", "cleaner_terminal_state"}
+            for event in events:
+                if event["phase"] in phases:
+                    self.assertIn("result", event)
+                    self.assertIn("positive_feedback", event)
+                    self.assertIn("feedback_source", event)
+                    self.assertFalse(event["positive_feedback"])
+                    self.assertIsNone(event["feedback_source"])
+
+    def test_unresolved_day_events_have_non_proof_evidence_fields(self):
+        class PendingDayBrowser(FakeBrowser):
+            def delete_selected_day(self):
+                return False
+            def wait_for_target_absence(self, _label, timeout_ms):
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-pending-evidence")
+            cleaner = Cleaner(
+                PendingDayBrowser([("2 Aug", 1)]),
+                pending=pending,
+                checkpoint=checkpoint,
+                diagnostic=diagnostic,
+                max_batches=1,
+            )
+            cleaner.run()
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            for event in events:
+                if event["phase"] in {"day_trash_pending", "day_trash_unresolved", "cleaner_terminal_state"}:
+                    self.assertIn("result", event)
+                    self.assertIn("positive_feedback", event)
+                    self.assertIn("feedback_source", event)
+                    self.assertFalse(event["positive_feedback"])
+                    self.assertIsNone(event["feedback_source"])
+
+    def test_destructive_ambiguous_event_has_non_proof_evidence_fields(self):
+        class AmbiguousDayBrowser(FakeBrowser):
+            last_feedback_source = None
+            def delete_selected_day(self):
+                self.trashed.append(["day"])
+                return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="destructive-ambiguous-evidence")
+            cleaner = Cleaner(AmbiguousDayBrowser([("2 Aug", 1)]), pending=pending, diagnostic=diagnostic, max_batches=1)
+            with self.assertRaises(DestructiveActionAmbiguous):
+                cleaner.run()
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            event = next(event for event in events if event["phase"] == "destructive_action_ambiguous")
+            self.assertEqual(event["result"], "ambiguous")
+            self.assertFalse(event["positive_feedback"])
+            self.assertIsNone(event["feedback_source"])
+
+    def test_destructive_pending_event_has_non_proof_evidence_fields(self):
+        class PendingDayBrowser(FakeBrowser):
+            def delete_selected_day(self):
+                raise TimeoutError("unknown result")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="destructive-pending-evidence")
+            cleaner = Cleaner(PendingDayBrowser([("2 Aug", 1)]), pending=pending, diagnostic=diagnostic, max_batches=1)
+            cleaner.run()
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            event = next(event for event in events if event["phase"] == "destructive_action_pending")
+            self.assertEqual(event["result"], "pending_reconciliation")
+            self.assertFalse(event["positive_feedback"])
+            self.assertIsNone(event["feedback_source"])
+
     def test_pending_reconciliation_event_has_positive_proof_fields(self):
         class ReconciledBrowser(FakeBrowser):
             last_feedback_source = "browser_positive_feedback"
