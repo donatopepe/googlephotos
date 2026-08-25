@@ -56,11 +56,12 @@ class PlaywrightBrowser:
         ("aria_live", '[aria-live]'),
     )
     TRASH_FEEDBACK_POPUP_PATTERN = re.compile(
-        r"(?i)(?:\b(?:moved|spostat[oaie])\s+"
+        r"(?:\b(?:moved|spostat[oaie])\s+"
         r"(?P<verb_first_count>\d+)\s+(?:photos?|foto)\b.*"
         r"\b(?:trash|bin|cestin[oi])\b|"
         r"\b(?P<quantity_first_count>\d+)\s+spostat[oaie]\b.*"
-        r"\b(?:trash|bin|cestin[oi])\b)"
+        r"\b(?:trash|bin|cestin[oi])\b)",
+        re.IGNORECASE,
     )
 
     def __init__(

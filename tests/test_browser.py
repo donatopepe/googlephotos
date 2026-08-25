@@ -684,7 +684,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(event.kwargs["error_type"], "RuntimeError")
         self.assertNotIn("error_message", event.kwargs)
 
-    def test_trash_feedback_accepts_quantity_first_popup_without_photo_noun(self):
+    def test_trash_feedback_accepts_quantity_first_popup_through_playwright_regex(self):
         page = Mock()
         popup = Mock()
         popup.count.return_value = 1
@@ -692,7 +692,14 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         popup.first.is_visible.return_value = True
         popup.first.inner_text.return_value = "62 spostate nel cestino"
         page.locator.return_value = Mock(count=lambda: 0)
-        page.get_by_text.side_effect = lambda query, exact=False: popup if hasattr(query, "search") else Mock(count=lambda: 0)
+        def get_by_text(query, exact=False):
+            if hasattr(query, "search"):
+                if query.search("62 spostate nel cestino") is None:
+                    return Mock(count=lambda: 0)
+                return popup
+            return Mock(count=lambda: 0)
+
+        page.get_by_text.side_effect = get_by_text
         diagnostic = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
