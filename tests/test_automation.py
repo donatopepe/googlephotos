@@ -255,6 +255,19 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertIsNone(inspected["feedback_source"])
             self.assertEqual(inspected["result"], "policy_blocked")
 
+    def test_pending_loaded_event_declares_observation_not_proof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-loaded-evidence")
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block").run()
+
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            loaded = next(event for event in events if event["phase"] == "pending_loaded")
+            self.assertEqual(loaded["result"], "observed")
+            self.assertFalse(loaded["positive_feedback"])
+            self.assertIsNone(loaded["feedback_source"])
+
     def test_pending_dry_run_event_has_non_proof_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")

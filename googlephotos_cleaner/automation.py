@@ -179,6 +179,9 @@ class Cleaner:
                 pending_exists=previous is not None,
                 pending_kind=previous.get("kind") if previous else None,
                 pending_count=previous.get("count") if previous else None,
+                result="observed",
+                positive_feedback=False,
+                feedback_source=None,
             )
             if previous and self.dry_run and self.pending_policy != "discard":
                 self._event(
