@@ -84,6 +84,7 @@ class Cleaner:
         self.reset_timeline_after_action = reset_timeline_after_action
         self.pending_policy = pending_policy
         self.pending_timeout_ms = pending_timeout_ms
+        self.reconcile_pending_only = False
         self.last_outcome = PassOutcome.CONTINUE
 
     def _checkpoint(self, *, batch: int, photos: int, state: str, reason: str) -> None:
@@ -247,6 +248,45 @@ class Cleaner:
                     pending_exists=True,
                     positive_feedback=False,
                     feedback_source=None,
+                )
+                return 0
+            if previous and self.reconcile_pending_only:
+                wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
+                feedback_source = None
+                reconciled = False
+                if wait_for_absence is not None:
+                    reconciled = wait_for_absence(previous["label"], timeout_ms=self.pending_timeout_ms)
+                    feedback_source = getattr(self.browser, "last_feedback_source", None)
+                if reconciled and feedback_source == "browser_positive_feedback":
+                    self.pending.clear()
+                    self.last_outcome = PassOutcome.PASS_DONE
+                    self.stop_requested = True
+                    self._event(
+                        "pending_reconciled",
+                        target=previous["label"],
+                        result="reconciled",
+                        positive_feedback=True,
+                        feedback_source=feedback_source,
+                    )
+                else:
+                    self.last_outcome = PassOutcome.PENDING_UNRESOLVED
+                    self.stop_requested = True
+                    self._event(
+                        "pending_unresolved",
+                        "WARNING",
+                        target=previous["label"],
+                        result="reconcile_only_unresolved",
+                        positive_feedback=False,
+                        feedback_source=None,
+                    )
+                self._event(
+                    "cleaner_terminal_state",
+                    "WARNING" if self.last_outcome is not PassOutcome.PASS_DONE else "INFO",
+                    outcome=self.last_outcome.value,
+                    stop_requested=True,
+                    pending_exists=self.pending.load() is not None,
+                    positive_feedback=self.last_outcome is PassOutcome.PASS_DONE,
+                    feedback_source=feedback_source if self.last_outcome is PassOutcome.PASS_DONE else None,
                 )
                 return 0
             if previous and self.pending_policy == "discard":
