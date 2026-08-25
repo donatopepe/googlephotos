@@ -204,6 +204,20 @@ class PlaywrightBrowser:
         """Let the current visible Google Photos timeline stabilize."""
         self.page.wait_for_timeout(250)
 
+    def _move_pointer_path(self, points: Sequence[tuple[float, float]], *, pause_ms: int = 80) -> None:
+        """Move through bounded viewport points using normal visible mouse input."""
+        for x, y in points:
+            self.page.mouse.move(x, y)
+            if pause_ms > 0:
+                self.page.wait_for_timeout(pause_ms)
+        if getattr(self, "diagnostic", None) is not None:
+            self.diagnostic.event(
+                "pointer_motion",
+                pointer_moves=len(points),
+                pointer_path_steps=len(points),
+                pause_ms=pause_ms,
+            )
+
     def advance_timeline(self) -> bool:
         """Move current visible timeline down once using real visible mouse input."""
         viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
@@ -212,8 +226,9 @@ class PlaywrightBrowser:
         y = viewport["height"] / 2
         step = getattr(self, "scroll_step", self.DEFAULT_SCROLL_STEP)
         delay = getattr(self, "scroll_delay_ms", self.DEFAULT_SCROLL_DELAY_MS)
-        self.page.mouse.move(x, y)
+        self._move_pointer_path(((x * 0.72, y * 0.66), (x, y)), pause_ms=40)
         self.page.mouse.wheel(0, step)
+        self._move_pointer_path(((x * 0.88, y * 0.58), (x, y)), pause_ms=40)
         self.page.wait_for_timeout(delay)
         after = self._dom_counts() if getattr(self, "diagnostic", None) is not None else {}
         if getattr(self, "diagnostic", None) is not None:
@@ -330,9 +345,16 @@ class PlaywrightBrowser:
                         break
                 if parent_box is None:
                     continue
-                self.page.mouse.move(
+                parent_point = (
                     parent_box["x"] + min(parent_box["width"] / 2, 5),
                     parent_box["y"] + min(parent_box["height"] / 2, 5),
+                )
+                self._move_pointer_path(
+                    (
+                        (parent_point[0] - 18, parent_point[1] - 12),
+                        parent_point,
+                    ),
+                    pause_ms=40,
                 )
                 try:
                     box = candidate.bounding_box()
@@ -350,6 +372,7 @@ class PlaywrightBrowser:
                 # The day checkbox can remain zero-sized until its row hover
                 # state settles; re-read it after the visible pointer move.
                 if box is None or box["width"] <= 0 or box["height"] <= 0:
+                    self._move_pointer_path((parent_point,), pause_ms=120)
                     self.page.wait_for_timeout(150)
                     try:
                         box = candidate.bounding_box()
@@ -988,6 +1011,19 @@ class PlaywrightBrowser:
                 break
         selected = self.page.locator('[role="checkbox"][aria-checked="true"]')
         selected_before = selected.count()
+        if selected_before <= 0:
+            if getattr(self, "diagnostic", None) is not None:
+                self.diagnostic.event(
+                    "trash_action_unavailable",
+                    "WARNING",
+                    target_kind=getattr(self, "last_selection_kind", "unknown"),
+                    selected_before=selected_before,
+                    action_button_counts=button_counts,
+                    visible_action_button_counts=visible_button_counts,
+                    result="not_clicked",
+                    reason="empty_selection",
+                )
+            raise CleanerError("Refusing Trash action with empty selection")
         if trash is None:
             if getattr(self, "diagnostic", None) is not None:
                 self.diagnostic.event(

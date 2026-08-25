@@ -155,7 +155,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertIs(browser._first_viewport_control(("[role=checkbox]",)), second)
         self.assertEqual(browser.last_locator_selector, "[role=checkbox]")
-        self.assertEqual(page.mouse.move.call_count, 2)
+        self.assertGreaterEqual(page.mouse.move.call_count, 4)
         first.hover.assert_not_called()
         second.hover.assert_not_called()
         hidden.hover.assert_not_called()
@@ -239,7 +239,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         result = browser._first_viewport_control(("[role=checkbox]",))
 
         self.assertIs(result, control)
-        self.assertEqual(page.mouse.move.call_count, 1)
+        self.assertGreaterEqual(page.mouse.move.call_count, 2)
         self.assertEqual(control.bounding_box.call_count, 2)
 
     def test_first_viewport_control_finds_visible_svg_inside_hidden_checkbox(self):
@@ -339,6 +339,40 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(page.locator.return_value.count.call_count, 2)
         browser._click_control.assert_called_once_with(item)
 
+    def test_first_viewport_control_moves_pointer_through_parent_path(self):
+        control = Mock()
+        parent = Mock()
+        control.locator.return_value = parent
+        parent.bounding_box.return_value = {"x": 100, "y": 200, "width": 800, "height": 48}
+        control.bounding_box.return_value = {"x": 100, "y": 200, "width": 24, "height": 24}
+        control.is_visible.return_value = True
+        locator = Mock()
+        locator.count.return_value = 1
+        locator.nth.return_value = control
+        page = Mock()
+        page.evaluate.return_value = {"width": 1000, "height": 600}
+        page.locator.return_value = locator
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = None
+
+        self.assertIs(browser._first_viewport_control(("[role=checkbox]",)), control)
+        self.assertGreaterEqual(page.mouse.move.call_count, 2)
+
+    def test_advance_timeline_moves_pointer_before_and_after_wheel(self):
+        page = Mock()
+        page.evaluate.return_value = {"width": 1000, "height": 600}
+        page.locator.return_value.count.return_value = 0
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.scroll_step = 240
+        browser.scroll_delay_ms = 1
+        browser.diagnostic = None
+
+        self.assertTrue(browser.advance_timeline())
+        self.assertGreaterEqual(page.mouse.move.call_count, 2)
+        page.mouse.wheel.assert_called_once_with(0, 240)
+
     def test_first_viewport_control_logs_hidden_candidates(self):
         control = Mock()
         parent = Mock()
@@ -383,7 +417,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         result = browser._day_locator()
 
         self.assertIs(result, control)
-        self.assertEqual(page.mouse.move.call_count, 2)
+        self.assertGreaterEqual(page.mouse.move.call_count, 4)
 
     def test_day_selection_verifies_clicked_day_not_topmost_day(self):
         initial = Mock()
@@ -460,8 +494,11 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertTrue(browser.advance_timeline())
 
-        browser.diagnostic.event.assert_called_once()
-        context = browser.diagnostic.event.call_args.kwargs
+        context = next(
+            call.kwargs
+            for call in browser.diagnostic.event.call_args_list
+            if call.args[0] == "timeline_advanced"
+        )
         self.assertEqual(context["wheel_delta_y"], 240)
         self.assertEqual(context["dom_before"]["day"], 0)
         self.assertEqual(context["dom_after"]["day"], 1)
@@ -477,9 +514,9 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertTrue(browser.advance_timeline())
 
-        page.mouse.move.assert_called_once_with(500, 300)
+        self.assertIn((500, 300), [call.args for call in page.mouse.move.call_args_list])
         page.mouse.wheel.assert_called_once_with(0, 240)
-        page.wait_for_timeout.assert_called_once_with(1500)
+        self.assertIn(1500, [call.args[0] for call in page.wait_for_timeout.call_args_list])
 
     def test_reset_timeline_to_top_uses_negative_wheel(self):
         page = Mock()
@@ -701,6 +738,23 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_dom_observation_failed")
         self.assertEqual(event.kwargs["error_type"], "RuntimeError")
         self.assertNotIn("error_message", event.kwargs)
+
+    def test_trash_action_unavailable_is_logged_before_click_start(self):
+        page = Mock()
+        page.get_by_role.return_value.count.return_value = 0
+        page.locator.return_value.count.return_value = 0
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+        browser.last_selection_kind = "media"
+
+        with self.assertRaises(CleanerError):
+            browser.delete_selected_day()
+
+        phases = [call.args[0] for call in diagnostic.event.call_args_list]
+        self.assertIn("trash_action_unavailable", phases)
+        self.assertNotIn("trash_click_started", phases)
 
     def test_trash_feedback_accepts_quantity_first_popup_through_playwright_regex(self):
         page = Mock()
@@ -1087,7 +1141,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         dialog.get_by_role.return_value.count.return_value = 0
         page.get_by_role.side_effect = [hidden, visible, absent, absent, dialog]
         selected = Mock()
-        selected.count.return_value = 0
+        selected.count.return_value = 1
         page.locator.return_value = selected
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
