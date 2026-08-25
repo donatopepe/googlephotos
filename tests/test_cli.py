@@ -192,6 +192,47 @@ class MainFlowTests(unittest.TestCase):
         self.assertEqual(finished["outcome"], "interrupted")
         self.assertTrue(all("html" not in event for event in events))
 
+    def test_runtime_error_preserves_terminal_outcome_and_checkpoint_reason(self):
+        import json
+        import main
+        from unittest.mock import patch
+        from googlephotos_cleaner.automation import PassOutcome
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            def close(self):
+                pass
+
+        class Cleaner:
+            last_outcome = PassOutcome.PENDING_UNRESOLVED
+            stop_requested = True
+            def __init__(self, *args, **kwargs):
+                self.diagnostic = kwargs["diagnostic"]
+            def run(self):
+                raise RuntimeError("pending reconciliation failed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            checkpoint = Path(tmp) / "checkpoint.json"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()), patch.object(main, "Cleaner", Cleaner):
+                self.assertEqual(main.run(["--dry-run", "--exit-on-error", "--log-file", str(log), "--checkpoint-file", str(checkpoint), "--profile-dir", str(Path(tmp) / "profile")]), 1)
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+            saved = json.loads(checkpoint.read_text())
+
+        self.assertEqual(saved["state"], "pending")
+        self.assertEqual(saved["reason"], "pending_reconciliation_failed")
+        failed = next(event for event in events if event["phase"] == "run_failed")
+        stopped = next(event for event in events if event["phase"] == "cleaner_stopped")
+        finished = next(event for event in events if event["phase"] == "run_finished")
+        self.assertEqual(failed["outcome"], "pending_unresolved")
+        for event in (stopped, finished):
+            self.assertEqual(event["outcome"], "pending_unresolved")
+            self.assertEqual(event["checkpoint_state"], "pending")
+            self.assertEqual(event["checkpoint_reason"], "pending_reconciliation_failed")
+
     def test_main_preserves_cleaner_ambiguous_outcome(self):
         import json
         import main
