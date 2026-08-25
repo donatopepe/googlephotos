@@ -128,6 +128,31 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertTrue(completed["positive_feedback"])
         self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
 
+    def test_media_completion_event_uses_browser_feedback_source(self):
+        class MediaBrowser(FakeBrowser):
+            last_feedback_source = "browser_positive_feedback"
+
+        browser = MediaBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-source")
+            Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        completed = next(event for event in events if event["phase"] == "trash_completed")
+        self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
+
+    def test_media_completion_event_keeps_null_source_without_browser_proof(self):
+        browser = FakeBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-source-null")
+            Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        completed = next(event for event in events if event["phase"] == "trash_completed")
+        self.assertIsNone(completed["feedback_source"])
+
     def test_trash_completion_event_contains_positive_feedback(self):
         browser = FakeBrowser([["old-1"]])
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,7 +164,7 @@ class BrowserAdapterTests(unittest.TestCase):
         completed = next(event for event in events if event["phase"] == "trash_completed")
         self.assertTrue(completed["positive_feedback"])
         self.assertEqual(completed["result"], "confirmed")
-        self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
+        self.assertIsNone(completed["feedback_source"])
 
     def test_ambiguous_trash_event_includes_sanitized_error(self):
         browser = AmbiguousBrowser([["old-1"]])
