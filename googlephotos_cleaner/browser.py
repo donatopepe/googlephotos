@@ -752,7 +752,9 @@ class PlaywrightBrowser:
     def _wait_for_trash_feedback(self, timeout_ms: int = 5000) -> bool:
         if timeout_ms <= 0:
             raise ValueError("timeout_ms must be greater than zero")
-        deadline = time.monotonic() + timeout_ms / 1000
+        started = time.monotonic()
+        started_perf = time.perf_counter()
+        deadline = started + timeout_ms / 1000
         checks = 0
         try:
             while time.monotonic() < deadline:
@@ -776,6 +778,9 @@ class PlaywrightBrowser:
                             final=True,
                             positive_feedback=True,
                             feedback_source=self.last_feedback_source,
+                            feedback_category="Moved to trash",
+                            elapsed_ms=round((time.perf_counter() - started_perf) * 1000),
+                            remaining_ms=max(0, timeout_ms - round((time.perf_counter() - started_perf) * 1000)),
                         )
                     return True
                 self.page.wait_for_timeout(250)
@@ -791,6 +796,8 @@ class PlaywrightBrowser:
                     final=True,
                     positive_feedback=False,
                     feedback_source=None,
+                    elapsed_ms=round((time.perf_counter() - started_perf) * 1000),
+                    remaining_ms=max(0, timeout_ms - round((time.perf_counter() - started_perf) * 1000)),
                     error_type=type(exc).__name__,
                     error_message=str(exc),
                 )
@@ -802,7 +809,10 @@ class PlaywrightBrowser:
                 check=max(checks, 1),
                 final=True,
                 positive_feedback=feedback,
-                feedback_source=self.last_feedback_source,
+                feedback_source=self.last_feedback_source if feedback else None,
+                feedback_category="Moved to trash" if feedback else None,
+                elapsed_ms=round((time.perf_counter() - started_perf) * 1000),
+                remaining_ms=max(0, timeout_ms - round((time.perf_counter() - started_perf) * 1000)),
             )
         return feedback
 
