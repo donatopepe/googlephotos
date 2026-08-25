@@ -114,6 +114,10 @@ class Cleaner:
         return context
 
     def _event(self, phase: str, level: str = "INFO", **context: Any) -> None:
+        if phase == "cleaner_terminal_state":
+            context.setdefault("result", "terminal_state")
+            context.setdefault("positive_feedback", False)
+            context.setdefault("feedback_source", None)
         if self.diagnostic is not None:
             self.diagnostic.event(phase, level, **context)
         if level in {"WARNING", "ERROR"} or phase in {
