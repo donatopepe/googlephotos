@@ -679,6 +679,17 @@ class PlaywrightBrowser:
                     return True
                 self.page.wait_for_timeout(500)
             feedback = self._trash_feedback_visible()
+            if getattr(self, "diagnostic", None) is not None:
+                self.diagnostic.event(
+                    "trash_reconcile_check",
+                    target=label,
+                    timeout_ms=timeout_ms,
+                    check=max(checks, 1),
+                    target_count=self._target_count(label),
+                    final=True,
+                    positive_feedback=feedback,
+                    feedback_source=self.last_feedback_source if feedback else None,
+                )
         except Exception as exc:
             self.last_feedback_source = None
             if getattr(self, "diagnostic", None) is not None:
