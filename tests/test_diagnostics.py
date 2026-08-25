@@ -134,6 +134,16 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(loaded["reason"], "run_identity_mismatch")
             self.assertFalse(loaded["resumable"])
 
+    def test_checkpoint_load_rejects_running_without_identity_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.json"
+            path.write_text(json.dumps({"batch": 1, "photos": 1, "state": "running", "run_id": "some-run"}))
+            checkpoint = CheckpointStore(path)
+            loaded = checkpoint.load()
+            self.assertEqual(loaded["state"], "stale")
+            self.assertEqual(loaded["reason"], "run_identity_required")
+            self.assertFalse(loaded["resumable"])
+
     def test_checkpoint_is_written_atomically_without_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "checkpoint.json"
