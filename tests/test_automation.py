@@ -242,6 +242,19 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(completed["result"], "confirmed")
         self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
 
+    def test_pending_inspect_event_has_non_proof_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-inspect-evidence")
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="inspect").run()
+
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            inspected = next(event for event in events if event["phase"] == "pending_inspected")
+            self.assertFalse(inspected["positive_feedback"])
+            self.assertIsNone(inspected["feedback_source"])
+            self.assertEqual(inspected["result"], "policy_blocked")
+
     def test_pending_dry_run_event_has_non_proof_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")
@@ -654,6 +667,19 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertFalse(discarded["positive_feedback"])
             self.assertIsNone(discarded["feedback_source"])
             self.assertEqual(discarded["result"], "discarded_without_reconciliation")
+
+    def test_pending_media_unresolved_event_has_non_proof_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="batch:1", kind="media_batch", scroll_top=0, count=2)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-unresolved")
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block").run()
+
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            unresolved = next(event for event in events if event["phase"] == "pending_unresolved")
+            self.assertFalse(unresolved["positive_feedback"])
+            self.assertIsNone(unresolved["feedback_source"])
+            self.assertEqual(unresolved["result"], "policy_blocked")
 
     def test_ambiguous_media_batch_is_journaled_and_blocks_followup_trash(self):
         class AmbiguousBatchBrowser(FakeBrowser):

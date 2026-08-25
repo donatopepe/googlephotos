@@ -221,6 +221,9 @@ class Cleaner:
                     "WARNING",
                     target=previous.get("label"),
                     policy=self.pending_policy,
+                    result="policy_blocked",
+                    positive_feedback=False,
+                    feedback_source=None,
                 )
                 self.stop_requested = True
                 self.last_outcome = PassOutcome.PENDING_UNRESOLVED
@@ -246,6 +249,9 @@ class Cleaner:
                         "WARNING",
                         target=previous["label"],
                         count=previous.get("count"),
+                        result="policy_blocked",
+                        positive_feedback=False,
+                        feedback_source=None,
                     )
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.PENDING_UNRESOLVED
