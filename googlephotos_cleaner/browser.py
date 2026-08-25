@@ -660,23 +660,40 @@ class PlaywrightBrowser:
             raise ValueError("timeout_ms must be greater than zero")
         deadline = time.monotonic() + timeout_ms / 1000
         checks = 0
-        while time.monotonic() < deadline:
-            checks += 1
+        try:
+            while time.monotonic() < deadline:
+                checks += 1
+                feedback = self._trash_feedback_visible()
+                if getattr(self, "diagnostic", None) is not None:
+                    self.diagnostic.event(
+                        "trash_reconcile_check",
+                        target=label,
+                        timeout_ms=timeout_ms,
+                        check=checks,
+                        target_count=self._target_count(label),
+                        positive_feedback=feedback,
+                        feedback_source=self.last_feedback_source if feedback else None,
+                    )
+                if feedback:
+                    return True
+                self.page.wait_for_timeout(500)
             feedback = self._trash_feedback_visible()
+        except Exception as exc:
+            self.last_feedback_source = None
             if getattr(self, "diagnostic", None) is not None:
                 self.diagnostic.event(
-                    "trash_reconcile_check",
+                    "trash_reconcile_check_failed",
+                    "ERROR",
                     target=label,
                     timeout_ms=timeout_ms,
-                    check=checks,
-                    target_count=self._target_count(label),
-                    positive_feedback=feedback,
-                    feedback_source=self.last_feedback_source if feedback else None,
+                    check=max(checks, 1),
+                    final=True,
+                    positive_feedback=False,
+                    feedback_source=None,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
                 )
-            if feedback:
-                return True
-            self.page.wait_for_timeout(500)
-        feedback = self._trash_feedback_visible()
+            raise
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "trash_reconcile_timeout",
