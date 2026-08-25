@@ -57,9 +57,9 @@ class PlaywrightBrowser:
     )
     TRASH_FEEDBACK_POPUP_PATTERN = re.compile(
         r"(?:\b(?:moved|spostat[oaie])\s+"
-        r"(?P<verb_first_count>\d+)\s+(?:photos?|foto)\b.*"
+        r"(\d+)\s+(?:photos?|foto)\b.*"
         r"\b(?:trash|bin|cestin[oi])\b|"
-        r"\b(?P<quantity_first_count>\d+)\s+spostat[oaie]\b.*"
+        r"\b(\d+)\s+spostat[oaie]\b.*"
         r"\b(?:trash|bin|cestin[oi])\b)",
         re.IGNORECASE,
     )
@@ -604,8 +604,10 @@ class PlaywrightBrowser:
 
     @staticmethod
     def _moved_count_from_popup_match(match: re.Match[str]) -> int:
-        count = match.group("verb_first_count") or match.group("quantity_first_count")
-        return int(count)
+        for group in match.groups():
+            if group is not None:
+                return int(group)
+        raise ValueError("Trash popup quantity capture missing")
 
     def _observe_trash_feedback_live_regions(self) -> bool:
         for selector_kind, selector in self.TRASH_FEEDBACK_LIVE_REGION_SELECTORS:
