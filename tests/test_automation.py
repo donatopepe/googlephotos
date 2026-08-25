@@ -101,6 +101,33 @@ class BrowserAdapterTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             cleaner.run()
 
+    def test_day_completion_event_keeps_null_feedback_source_without_observer_proof(self):
+        browser = FakeBrowser([("2 Aug", 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-source-null")
+            Cleaner(browser, day_mode=True, diagnostic=diagnostic, max_batches=1).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        completed = next(event for event in events if event["phase"] == "day_trash_completed")
+        self.assertIsNone(completed["feedback_source"])
+
+    def test_day_completion_event_contains_observer_feedback_source(self):
+        class DayBrowser(FakeBrowser):
+            last_selection_kind = "day"
+            last_feedback_source = "browser_positive_feedback"
+
+        browser = DayBrowser([("2 Aug", 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-source")
+            Cleaner(browser, day_mode=True, diagnostic=diagnostic, max_batches=1).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        completed = next(event for event in events if event["phase"] == "day_trash_completed")
+        self.assertTrue(completed["positive_feedback"])
+        self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
+
     def test_trash_completion_event_contains_positive_feedback(self):
         browser = FakeBrowser([["old-1"]])
         with tempfile.TemporaryDirectory() as tmp:
