@@ -56,8 +56,11 @@ class PlaywrightBrowser:
         ("aria_live", '[aria-live]'),
     )
     TRASH_FEEDBACK_POPUP_PATTERN = re.compile(
-        r"(?i)\b(?:moved|spostat[oaie])\s+(\d+)\s+"
-        r"(?:photos?|foto)\b.*\b(?:trash|bin|cestin[oi])\b"
+        r"(?i)(?:\b(?:moved|spostat[oaie])\s+"
+        r"(?P<verb_first_count>\d+)\s+(?:photos?|foto)\b.*"
+        r"\b(?:trash|bin|cestin[oi])\b|"
+        r"\b(?P<quantity_first_count>\d+)\s+spostat[oaie]\b.*"
+        r"\b(?:trash|bin|cestin[oi])\b)"
     )
 
     def __init__(
@@ -598,6 +601,11 @@ class PlaywrightBrowser:
             return "missing"
         return "other"
 
+    @staticmethod
+    def _moved_count_from_popup_match(match: re.Match[str]) -> int:
+        count = match.group("verb_first_count") or match.group("quantity_first_count")
+        return int(count)
+
     def _observe_trash_feedback_live_regions(self) -> bool:
         for selector_kind, selector in self.TRASH_FEEDBACK_LIVE_REGION_SELECTORS:
             matched_count = 0
@@ -624,7 +632,7 @@ class PlaywrightBrowser:
                     if isinstance(rendered_text, str):
                         match = self.TRASH_FEEDBACK_POPUP_PATTERN.search(rendered_text)
                         if match is not None:
-                            moved_count = int(match.group(1))
+                            moved_count = self._moved_count_from_popup_match(match)
                     visible_candidates.append((role, aria_live, moved_count))
             except Exception as exc:
                 if getattr(self, "diagnostic", None) is not None:
@@ -757,7 +765,7 @@ class PlaywrightBrowser:
                     match = popup_pattern.search(rendered_text)
                     if match is None:
                         continue
-                    moved_count = int(match.group(1))
+                    moved_count = self._moved_count_from_popup_match(match)
                     self.last_feedback_source = "browser_positive_feedback"
                     if getattr(self, "diagnostic", None) is not None:
                         self.diagnostic.event(

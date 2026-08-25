@@ -684,6 +684,26 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(event.kwargs["error_type"], "RuntimeError")
         self.assertNotIn("error_message", event.kwargs)
 
+    def test_trash_feedback_accepts_quantity_first_popup_without_photo_noun(self):
+        page = Mock()
+        popup = Mock()
+        popup.count.return_value = 1
+        popup.first = popup
+        popup.first.is_visible.return_value = True
+        popup.first.inner_text.return_value = "62 spostate nel cestino"
+        page.locator.return_value = Mock(count=lambda: 0)
+        page.get_by_text.side_effect = lambda query, exact=False: popup if hasattr(query, "search") else Mock(count=lambda: 0)
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._trash_feedback_visible())
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_popup")
+        self.assertEqual(event.kwargs["moved_count"], 62)
+        self.assertEqual(event.kwargs["feedback_source"], "browser_positive_feedback")
+        self.assertNotIn("raw_text", event.kwargs)
+
     def test_trash_feedback_accepts_quantity_popup_variants_and_logs_count_only(self):
         from unittest.mock import Mock
         for phrase, expected in (("Spostate 8 foto nel Cestino", 8), ("Moved 8 photos to Trash", 8)):
