@@ -181,7 +181,15 @@ class Cleaner:
                 pending_count=previous.get("count") if previous else None,
             )
             if previous and self.dry_run and self.pending_policy != "discard":
-                self._event("pending_unresolved", "WARNING", target=previous.get("label"), policy=self.pending_policy)
+                self._event(
+                    "pending_unresolved",
+                    "WARNING",
+                    target=previous.get("label"),
+                    policy=self.pending_policy,
+                    result="policy_blocked_dry_run",
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
                 self.stop_requested = True
                 self.last_outcome = PassOutcome.PENDING_UNRESOLVED
                 self._event("cleaner_terminal_state", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
@@ -204,6 +212,8 @@ class Cleaner:
                     "WARNING",
                     target=previous.get("label"),
                     reason="policy_blocks_automatic_reconciliation",
+                    result="not_attempted",
+                    positive_feedback=False,
                     feedback_source=None,
                 )
                 self._event(
