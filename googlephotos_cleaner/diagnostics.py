@@ -155,10 +155,24 @@ class CheckpointStore:
             return None
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
+        except json.JSONDecodeError:
+            return {
+                "state": "stale",
+                "reason": "invalid_checkpoint_json",
+                "resumable": False,
+            }
+        except OSError:
+            return {
+                "state": "stale",
+                "reason": "checkpoint_unreadable",
+                "resumable": False,
+            }
         if not isinstance(payload, dict):
-            return None
+            return {
+                "state": "stale",
+                "reason": "invalid_checkpoint_shape",
+                "resumable": False,
+            }
         if payload.get("state") == "running" and (
             not payload.get("run_id")
             or current_run_id is None

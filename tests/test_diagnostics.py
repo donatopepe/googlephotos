@@ -144,6 +144,26 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(loaded["reason"], "run_identity_required")
             self.assertFalse(loaded["resumable"])
 
+    def test_checkpoint_load_marks_malformed_json_as_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.json"
+            path.write_text("{not-json")
+            checkpoint = CheckpointStore(path)
+            loaded = checkpoint.load(current_run_id="current-run")
+            self.assertEqual(loaded["state"], "stale")
+            self.assertEqual(loaded["reason"], "invalid_checkpoint_json")
+            self.assertFalse(loaded["resumable"])
+
+    def test_checkpoint_load_marks_non_object_json_as_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.json"
+            path.write_text("[]")
+            checkpoint = CheckpointStore(path)
+            loaded = checkpoint.load(current_run_id="current-run")
+            self.assertEqual(loaded["state"], "stale")
+            self.assertEqual(loaded["reason"], "invalid_checkpoint_shape")
+            self.assertFalse(loaded["resumable"])
+
     def test_checkpoint_is_written_atomically_without_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "checkpoint.json"
