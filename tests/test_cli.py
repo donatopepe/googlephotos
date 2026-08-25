@@ -92,6 +92,91 @@ class MainFlowTests(unittest.TestCase):
             self.assertFalse(event["positive_feedback"])
             self.assertIsNone(event["feedback_source"])
 
+    def test_keyboard_interrupt_finalizes_terminal_checkpoint_context(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            checkpoint = Path(tmp) / "checkpoint.json"
+            with patch.object(main, "PlaywrightBrowser", side_effect=KeyboardInterrupt()):
+                self.assertEqual(main.run(["--dry-run", "--log-file", str(log), "--checkpoint-file", str(checkpoint), "--profile-dir", str(Path(tmp) / "profile")]), 130)
+            saved = json.loads(checkpoint.read_text())
+            self.assertEqual(saved["state"], "interrupted")
+            self.assertEqual(saved["reason"], "keyboard_interrupt")
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+            finished = next(event for event in events if event["phase"] == "run_finished")
+            self.assertEqual(finished["result"], "run_finished")
+            self.assertFalse(finished["positive_feedback"])
+            self.assertIsNone(finished["feedback_source"])
+
+    def test_close_failure_finalizes_checkpoint_and_non_proof_events(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            def close(self):
+                raise RuntimeError("close failed")
+
+        class Cleaner:
+            last_outcome = type("Outcome", (), {"value": "pass_done"})()
+            stop_requested = True
+            def __init__(self, *args, **kwargs):
+                self.diagnostic = kwargs["diagnostic"]
+            def run(self):
+                self.diagnostic.event("run_started", mode="dry-run")
+                return 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            checkpoint = Path(tmp) / "checkpoint.json"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()), patch.object(main, "Cleaner", Cleaner):
+                self.assertEqual(main.run(["--dry-run", "--max-batches", "1", "--log-file", str(log), "--checkpoint-file", str(checkpoint), "--profile-dir", str(Path(tmp) / "profile")]), 1)
+            saved = json.loads(checkpoint.read_text())
+            self.assertEqual(saved["state"], "close_failed")
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+            close_event = next(event for event in events if event["phase"] == "browser_close_failed")
+            self.assertFalse(close_event["positive_feedback"])
+            self.assertIsNone(close_event["feedback_source"])
+
+    def test_main_run_finished_preserves_terminal_checkpoint_state(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            def close(self):
+                pass
+
+        class Cleaner:
+            last_outcome = type("Outcome", (), {"value": "pass_done"})()
+            stop_requested = True
+            def __init__(self, *args, **kwargs):
+                self.diagnostic = kwargs["diagnostic"]
+            def run(self):
+                self.diagnostic.event("run_started", mode="dry-run")
+                return 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            checkpoint = Path(tmp) / "checkpoint.json"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()), patch.object(main, "Cleaner", Cleaner):
+                self.assertEqual(main.run(["--dry-run", "--max-batches", "1", "--log-file", str(log), "--checkpoint-file", str(checkpoint), "--profile-dir", str(Path(tmp) / "profile")]), 0)
+            events = [json.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+            finished = next(event for event in events if event["phase"] == "run_finished")
+            self.assertEqual(finished["outcome"], "pass_done")
+            self.assertFalse(checkpoint.exists())
+
     def test_main_writes_finished_outcome_on_keyboard_interrupt(self):
         import json
         import main

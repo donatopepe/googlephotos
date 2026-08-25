@@ -60,6 +60,7 @@ def run(argv=None) -> int:
     browser_cleanup = "not_started"
     cleaner_stop_requested = False
     processed_total = 0
+    exit_code = 0
     try:
         browser = PlaywrightBrowser(
             args.profile_dir,
@@ -121,11 +122,18 @@ def run(argv=None) -> int:
         processed_total = processed or 0
         run_outcome = cleaner.last_outcome.value
         cleaner_stop_requested = bool(getattr(cleaner, "stop_requested", False))
-        return 0
     except KeyboardInterrupt:
         run_outcome = "interrupted"
         logger.warning("Interrupted by user")
-        return 130
+        checkpoint.save(
+            batch=processed_total,
+            photos=processed_total,
+            state="interrupted",
+            reason="keyboard_interrupt",
+            run_id=diagnostic.run_id,
+            **process_context(),
+        )
+        exit_code = 130
     except (CleanerError, OSError, RuntimeError) as exc:
         cleaner_outcome = getattr(locals().get("cleaner"), "last_outcome", None)
         run_outcome = (
@@ -142,6 +150,7 @@ def run(argv=None) -> int:
             run_id=diagnostic.run_id,
             **process_context(),
         )
+        exit_code = 1
         diagnostic.event(
             "run_failed",
             "ERROR",
@@ -186,11 +195,23 @@ def run(argv=None) -> int:
             except Exception as close_error:
                 browser_cleanup = "failed"
                 run_outcome = "failed_close"
+                checkpoint.save(
+                    batch=processed_total,
+                    photos=processed_total,
+                    state="close_failed",
+                    reason="browser_close_failed",
+                    run_id=diagnostic.run_id,
+                    **process_context(),
+                )
+                exit_code = 1
                 diagnostic.event(
                     "browser_close_failed",
                     "ERROR",
                     error_type=type(close_error).__name__,
                     error_message=str(close_error),
+                    result="close_failed",
+                    positive_feedback=False,
+                    feedback_source=None,
                 )
         if run_outcome is None:
             run_outcome = "finished"
@@ -224,6 +245,7 @@ def run(argv=None) -> int:
             positive_feedback=False,
             feedback_source=None,
         )
+    return exit_code
 
 
 if __name__ == "__main__":
