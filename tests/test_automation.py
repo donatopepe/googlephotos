@@ -548,6 +548,21 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertFalse(unresolved)
             self.assertTrue(any(event["phase"] == "pending_unresolved" for event in events))
 
+    def test_pending_discard_is_explicit_and_not_reconciliation_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-discard")
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="discard").run()
+
+            self.assertIsNone(pending.load())
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            discarded = next(event for event in events if event["phase"] == "pending_discarded_manual")
+            self.assertEqual(discarded["policy"], "discard")
+            self.assertFalse(discarded["positive_feedback"])
+            self.assertIsNone(discarded["feedback_source"])
+            self.assertFalse(any(event["phase"] == "pending_reconciled" for event in events))
+
     def test_pending_inspect_stops_without_retrying_destructive_action(self):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")

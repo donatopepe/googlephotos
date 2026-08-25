@@ -188,7 +188,15 @@ class Cleaner:
                 return 0
             if previous and self.pending_policy == "discard":
                 self.pending.clear()
-                self._event("pending_discarded_manual", "WARNING", target=previous.get("label"), policy=self.pending_policy)
+                self._event(
+                    "pending_discarded_manual",
+                    "WARNING",
+                    target=previous.get("label"),
+                    policy=self.pending_policy,
+                    positive_feedback=False,
+                    feedback_source=None,
+                    result="discarded_without_reconciliation",
+                )
                 previous = None
             if previous and self.pending_policy in {"block", "inspect"}:
                 self._event(
