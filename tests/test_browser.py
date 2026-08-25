@@ -321,6 +321,24 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         control.click.assert_not_called()
         svg.click.assert_called_once_with()
 
+    def test_single_media_selection_waits_for_selected_control_to_stabilize(self):
+        item = Mock()
+        item.get_attribute.side_effect = lambda name: {
+            "aria-label": "Foto - test",
+            "aria-checked": "false",
+        }.get(name)
+        page = Mock()
+        page.locator.return_value.count.side_effect = [0, 1]
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._first_viewport_control = Mock(return_value=item)
+        browser._click_control = Mock()
+        browser._log_selection = Mock()
+
+        self.assertEqual(browser._select_single_media(), "Foto - test")
+        self.assertEqual(page.locator.return_value.count.call_count, 2)
+        browser._click_control.assert_called_once_with(item)
+
     def test_first_viewport_control_logs_hidden_candidates(self):
         control = Mock()
         parent = Mock()

@@ -466,7 +466,13 @@ class PlaywrightBrowser:
         before = item.get_attribute("aria-checked")
         self._click_control(item)
         after = item.get_attribute("aria-checked")
-        verified = self.page.locator('[role="checkbox"][aria-checked="true"]').count() > 0
+        selected = self.page.locator('[role="checkbox"][aria-checked="true"]')
+        verified = False
+        for _ in range(5):
+            if selected.count() > 0:
+                verified = True
+                break
+            self.page.wait_for_timeout(150)
         self._log_selection(
             kind="media",
             selector=getattr(self, "last_locator_selector", "SINGLE_MEDIA_SELECTORS"),
@@ -982,6 +988,18 @@ class PlaywrightBrowser:
                 break
         selected = self.page.locator('[role="checkbox"][aria-checked="true"]')
         selected_before = selected.count()
+        if trash is None:
+            if getattr(self, "diagnostic", None) is not None:
+                self.diagnostic.event(
+                    "trash_action_unavailable",
+                    "WARNING",
+                    target_kind=getattr(self, "last_selection_kind", "unknown"),
+                    selected_before=selected_before,
+                    action_button_counts=button_counts,
+                    visible_action_button_counts=visible_button_counts,
+                    result="not_clicked",
+                )
+            raise CleanerError("Delete action not found; refusing blind click")
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "trash_click_started",
@@ -992,8 +1010,6 @@ class PlaywrightBrowser:
                 confirmation_required=None,
                 result="started",
             )
-        if trash is None:
-            raise CleanerError("Delete action not found; refusing blind click")
         trash.click()
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
