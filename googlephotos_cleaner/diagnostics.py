@@ -146,6 +146,19 @@ class PendingActionStore:
 
 
 class CheckpointStore:
+    _VALID_STATES = {
+        "running",
+        "bounded_stop",
+        "completed",
+        "idle",
+        "pending",
+        "ambiguous",
+        "scan_failed",
+        "stale",
+        "interrupted",
+        "close_failed",
+    }
+
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,6 +186,18 @@ class CheckpointStore:
                 "reason": "invalid_checkpoint_shape",
                 "resumable": False,
             }
+        if not payload.get("state"):
+            payload = dict(payload)
+            payload["state"] = "stale"
+            payload["reason"] = "missing_checkpoint_state"
+            payload["resumable"] = False
+            return payload
+        if payload.get("state") not in self._VALID_STATES:
+            payload = dict(payload)
+            payload["state"] = "stale"
+            payload["reason"] = "unknown_checkpoint_state"
+            payload["resumable"] = False
+            return payload
         if payload.get("state") == "running" and (
             not payload.get("run_id")
             or current_run_id is None

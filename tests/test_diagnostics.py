@@ -164,6 +164,26 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(loaded["reason"], "invalid_checkpoint_shape")
             self.assertFalse(loaded["resumable"])
 
+    def test_checkpoint_load_marks_missing_state_as_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.json"
+            path.write_text(json.dumps({"batch": 1, "photos": 1, "run_id": "run"}))
+            checkpoint = CheckpointStore(path)
+            loaded = checkpoint.load(current_run_id="run")
+            self.assertEqual(loaded["state"], "stale")
+            self.assertEqual(loaded["reason"], "missing_checkpoint_state")
+            self.assertFalse(loaded["resumable"])
+
+    def test_checkpoint_load_marks_unknown_state_as_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.json"
+            path.write_text(json.dumps({"batch": 1, "photos": 1, "state": "mystery", "run_id": "run"}))
+            checkpoint = CheckpointStore(path)
+            loaded = checkpoint.load(current_run_id="run")
+            self.assertEqual(loaded["state"], "stale")
+            self.assertEqual(loaded["reason"], "unknown_checkpoint_state")
+            self.assertFalse(loaded["resumable"])
+
     def test_checkpoint_is_written_atomically_without_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "checkpoint.json"
