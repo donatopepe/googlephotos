@@ -192,6 +192,13 @@ class Cleaner:
                 previous = None
             if previous and self.pending_policy in {"block", "inspect"}:
                 self._event(
+                    "pending_reconciliation_skipped",
+                    "WARNING",
+                    target=previous.get("label"),
+                    reason="policy_blocks_automatic_reconciliation",
+                    feedback_source=None,
+                )
+                self._event(
                     "pending_inspected" if self.pending_policy == "inspect" else "pending_unresolved",
                     "WARNING",
                     target=previous.get("label"),
@@ -235,15 +242,22 @@ class Cleaner:
                         if wait_for_absence is not None
                         else False
                     )
-                    if target_absent:
+                    feedback_source = getattr(self.browser, "last_feedback_source", None)
+                    if target_absent and feedback_source == "browser_positive_feedback":
                         self.pending.clear()
-                        self._event("pending_reconciled", target=previous["label"], result="absent")
+                        self._event(
+                            "pending_reconciled",
+                            target=previous["label"],
+                            result="absent",
+                            feedback_source=feedback_source,
+                        )
                     else:
                         self._event(
                             "pending_unresolved",
                             "WARNING",
                             target=previous["label"],
                             result="absent_without_feedback",
+                            feedback_source=feedback_source,
                         )
                         self.stop_requested = True
                         self.last_outcome = PassOutcome.PENDING_UNRESOLVED
@@ -258,12 +272,14 @@ class Cleaner:
                         if wait_for_absence is not None
                         else False
                     )
-                    if target_absent:
+                    feedback_source = getattr(self.browser, "last_feedback_source", None)
+                    if target_absent and feedback_source == "browser_positive_feedback":
                         self.pending.clear()
                         self._event(
                             "pending_reconciled",
                             target=previous["label"],
                             result="present_after_wait",
+                            feedback_source=feedback_source,
                         )
                     else:
                         self._event(
@@ -271,6 +287,7 @@ class Cleaner:
                             "WARNING",
                             target=previous["label"],
                             result="present_without_feedback",
+                            feedback_source=feedback_source,
                         )
                         self.stop_requested = True
                         self.last_outcome = PassOutcome.PENDING_UNRESOLVED
