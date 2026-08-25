@@ -103,6 +103,29 @@ class BrowserAdapterTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             cleaner.run()
 
+    def test_day_missing_completion_proof_preserves_pending_and_checkpoint(self):
+        class NoSourceBrowser(FakeBrowser):
+            last_feedback_source = None
+
+        browser = NoSourceBrowser([("2 Aug", 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-proof-state")
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(
+                    browser,
+                    day_mode=True,
+                    diagnostic=diagnostic,
+                    pending=pending,
+                    checkpoint=checkpoint,
+                    max_batches=1,
+                ).run()
+
+            self.assertIsNotNone(pending.load())
+            import json
+            self.assertEqual(json.loads(checkpoint.path.read_text())["state"], "ambiguous")
+
     def test_day_completion_with_missing_feedback_source_is_ambiguous(self):
         class NoSourceBrowser(FakeBrowser):
             last_feedback_source = None
@@ -157,6 +180,29 @@ class BrowserAdapterTests(unittest.TestCase):
 
         completed = next(event for event in events if event["phase"] == "trash_completed")
         self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
+
+    def test_media_missing_completion_proof_preserves_pending_and_checkpoint(self):
+        class NoSourceBrowser(FakeBrowser):
+            last_feedback_source = None
+
+        browser = NoSourceBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="proof-state")
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(
+                    browser,
+                    day_mode=False,
+                    diagnostic=diagnostic,
+                    pending=pending,
+                    checkpoint=checkpoint,
+                    max_batches=1,
+                ).run()
+
+            self.assertIsNotNone(pending.load())
+            import json
+            self.assertEqual(json.loads(checkpoint.path.read_text())["state"], "ambiguous")
 
     def test_media_completion_with_missing_feedback_source_is_ambiguous(self):
         class NoSourceBrowser(FakeBrowser):

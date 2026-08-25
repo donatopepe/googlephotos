@@ -375,6 +375,8 @@ class Cleaner:
                         count=len(media_ids),
                         error_message=str(error),
                     )
+                    if self.checkpoint:
+                        self.checkpoint.save(batch=processed, photos=total_photos, state="ambiguous")
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                     raise error
@@ -573,6 +575,10 @@ class Cleaner:
                         error_type=type(error).__name__,
                         error_message=str(error),
                     )
+                    if self.checkpoint:
+                        self.checkpoint.save(batch=processed, photos=total_photos, state="ambiguous")
+                    if self.pending is not None and self.pending.load() is None:
+                        self.pending.save(label=day, kind="day", scroll_top=0)
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                     raise error
