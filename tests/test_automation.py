@@ -275,6 +275,28 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(completed["result"], "confirmed")
         self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
 
+    def test_pending_reconciliation_event_has_positive_proof_fields(self):
+        class ReconciledBrowser(FakeBrowser):
+            last_feedback_source = "browser_positive_feedback"
+            def target_exists(self, _label):
+                return False
+            def wait_for_target_absence(self, _label, timeout_ms):
+                return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-contract")
+            # Directly exercise legacy reconciliation branch retained for old journals.
+            cleaner = Cleaner(ReconciledBrowser([]), pending=pending, diagnostic=diagnostic)
+            cleaner.pending_policy = "legacy"
+            cleaner.run()
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            reconciled = next(event for event in events if event["phase"] == "pending_reconciled")
+            self.assertTrue(reconciled["positive_feedback"])
+            self.assertEqual(reconciled["feedback_source"], "browser_positive_feedback")
+            self.assertEqual(reconciled["result"], "reconciled")
+
     def test_pending_inspect_event_has_non_proof_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")
