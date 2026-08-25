@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="scan and log batches without moving photos to Trash",
     )
     parser.add_argument(
+        "--reconcile-pending",
+        action="store_true",
+        help="inspect existing pending action for positive feedback without clicking Trash",
+    )
+    parser.add_argument(
         "--max-batches",
         type=_positive_int,
         default=None,

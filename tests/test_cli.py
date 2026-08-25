@@ -233,6 +233,43 @@ class MainFlowTests(unittest.TestCase):
             self.assertEqual(event["checkpoint_state"], "pending")
             self.assertEqual(event["checkpoint_reason"], "pending_reconciliation_failed")
 
+    def test_pending_reconcile_command_does_not_click_trash(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            last_feedback_source = None
+            def close(self):
+                pass
+            def wait_until_authenticated(self):
+                pass
+            def target_exists(self, label):
+                return True
+            def wait_for_target_absence(self, label, timeout_ms):
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            import json as json_module
+            from googlephotos_cleaner.diagnostics import PendingActionStore
+            pending_path = Path(tmp) / "pending-action.json"
+            PendingActionStore(pending_path).save(label="pending day", kind="day", scroll_top=0)
+            log = Path(tmp) / "run.log"
+            checkpoint = Path(tmp) / "checkpoint.json"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()):
+                self.assertEqual(main.run(["--reconcile-pending", "--exit-on-error", "--log-file", str(log), "--checkpoint-file", str(checkpoint), "--profile-dir", str(Path(tmp) / "profile")]), 0)
+            events = [json_module.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+
+        self.assertFalse(pending_path.exists())
+        self.assertFalse(any(event["phase"] == "trash_click_started" for event in events))
+        reconciled = next(event for event in events if event["phase"] == "pending_unresolved")
+        self.assertFalse(reconciled["positive_feedback"])
+        self.assertIsNone(reconciled["feedback_source"])
+
     def test_main_preserves_cleaner_ambiguous_outcome(self):
         import json
         import main

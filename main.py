@@ -140,6 +140,7 @@ def run(argv=None) -> int:
             pending_policy=args.pending_action,
             pending_timeout_ms=args.pending_timeout_ms,
         )
+        cleaner.reconcile_pending_only = args.reconcile_pending
         # One invocation owns one bounded pass. Cleaner handles bounded
         # recovery and terminal stop; never re-enter pass loop.
         processed = cleaner.run()
