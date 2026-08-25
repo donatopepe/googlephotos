@@ -1375,6 +1375,11 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         with patch("googlephotos_cleaner.browser.time.monotonic", side_effect=[0, 10]):
             self.assertFalse(browser.wait_for_target_absence("Foto - 2 ago", timeout_ms=1000))
 
+        final_check = next(
+            call for call in diagnostic.event.call_args_list
+            if call.args[0] == "trash_reconcile_check" and call.kwargs.get("final")
+        )
+        self.assertFalse(final_check.kwargs["positive_feedback"])
         event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_reconcile_timeout")
         self.assertTrue(event.kwargs["final"])
         self.assertFalse(event.kwargs["positive_feedback"])
@@ -1404,6 +1409,22 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             browser.wait_for_target_absence("Foto - 2 ago", timeout_ms=0)
+
+    def test_wait_for_target_absence_positive_event_is_terminal_reconcile_event(self):
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.diagnostic = diagnostic
+        browser._trash_feedback_visible = Mock(return_value=True)
+        browser.last_feedback_source = "browser_positive_feedback"
+        browser._target_count = Mock(return_value=0)
+
+        self.assertTrue(browser.wait_for_target_absence("Foto - 2 ago", timeout_ms=1000))
+
+        phases = [call.args[0] for call in diagnostic.event.call_args_list]
+        self.assertIn("trash_reconcile_check", phases)
+        self.assertNotIn("trash_reconcile_timeout", phases)
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_reconcile_check")
+        self.assertTrue(event.kwargs["final"])
 
     def test_wait_for_target_absence_positive_event_reports_check_number(self):
         diagnostic = Mock()
