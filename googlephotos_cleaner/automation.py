@@ -363,6 +363,21 @@ class Cleaner:
                     raise DestructiveActionAmbiguous(
                         "Trash result is ambiguous; refusing destructive retry"
                     ) from exc
+                feedback_source = getattr(self.browser, "last_feedback_source", None)
+                if feedback_source != "browser_positive_feedback":
+                    error = DestructiveActionAmbiguous(
+                        "Trash completion has no positive feedback source; refusing completion claim"
+                    )
+                    self._event(
+                        "destructive_action_ambiguous",
+                        "ERROR",
+                        error_type=type(error).__name__,
+                        count=len(media_ids),
+                        error_message=str(error),
+                    )
+                    self.stop_requested = True
+                    self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
+                    raise error
                 if self.pending:
                     self.pending.clear()
                 self._event(
@@ -370,7 +385,7 @@ class Cleaner:
                     count=len(media_ids),
                     positive_feedback=True,
                     result="confirmed",
-                    feedback_source=getattr(self.browser, "last_feedback_source", None),
+                    feedback_source=feedback_source,
                 )
                 self.logger.info("Moved %d photos to Trash", len(media_ids))
 
@@ -546,12 +561,27 @@ class Cleaner:
                     self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                     self._event("cleaner_terminal_state", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
                     return processed
+                feedback_source = getattr(self.browser, "last_feedback_source", None)
+                if feedback_source != "browser_positive_feedback":
+                    error = DestructiveActionAmbiguous(
+                        "Trash completion has no positive feedback source; refusing completion claim"
+                    )
+                    self._event(
+                        "destructive_action_ambiguous",
+                        "ERROR",
+                        day=day,
+                        error_type=type(error).__name__,
+                        error_message=str(error),
+                    )
+                    self.stop_requested = True
+                    self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
+                    raise error
                 self._event(
                     "day_trash_completed",
                     day=day,
                     positive_feedback=True,
                     result="confirmed",
-                    feedback_source=getattr(self.browser, "last_feedback_source", None),
+                    feedback_source=feedback_source,
                 )
                 self.logger.info("Moved day %s to Trash", day)
                 reset_top = getattr(self.browser, "reset_timeline_to_top", None)
