@@ -7,6 +7,38 @@ from googlephotos_cleaner.browser import PlaywrightBrowser, is_authenticated_url
 from googlephotos_cleaner.automation import CleanerError
 
 
+class _FeedbackCandidate:
+    def __init__(self, text, *, visible=True, role=None, aria_live=None):
+        self.text = text
+        self.visible = visible
+        self.role = role
+        self.aria_live = aria_live
+
+    def is_visible(self):
+        return self.visible
+
+    def get_attribute(self, name):
+        return {"role": self.role, "aria-live": self.aria_live}.get(name)
+
+    def inner_text(self):
+        return self.text
+
+
+class _FeedbackLocator:
+    def __init__(self, candidates=()):
+        self.candidates = list(candidates)
+
+    def count(self):
+        return len(self.candidates)
+
+    @property
+    def first(self):
+        return self.candidates[0]
+
+    def nth(self, index):
+        return self.candidates[index]
+
+
 class BrowserDiagnosticsTests(unittest.TestCase):
     def test_browser_uses_small_slow_scroll_defaults(self):
         self.assertEqual(PlaywrightBrowser.DEFAULT_SCROLL_STEP, 240)
@@ -535,6 +567,122 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             PlaywrightBrowser.MEDIA_SELECTORS,
             ('[role="checkbox"][aria-checked="false"]',),
         )
+
+    def test_live_region_status_popup_is_positive_and_logs_safe_metadata(self):
+        candidate = _FeedbackCandidate(
+            "Spostate 19 foto nel Cestino", role="status", aria_live="polite"
+        )
+        page = Mock()
+        page.locator.side_effect = lambda selector: _FeedbackLocator([candidate]) if selector == '[role="status"]' else _FeedbackLocator()
+        page.get_by_text.return_value = _FeedbackLocator()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._trash_feedback_visible())
+        observations = [call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_dom_observation"]
+        self.assertTrue(observations)
+        event = observations[0]
+        self.assertEqual(event.kwargs["selector_group"], "live_region")
+        self.assertEqual(event.kwargs["selector_kind"], "status")
+        self.assertEqual(event.kwargs["matched_count"], 1)
+        self.assertEqual(event.kwargs["visible_count"], 1)
+        self.assertEqual(event.kwargs["candidate_role_counts"], {"status": 1})
+        self.assertEqual(event.kwargs["candidate_aria_live_counts"], {"polite": 1})
+        candidate_event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_candidate")
+        self.assertEqual(candidate_event.kwargs["candidate_kind"], "live_region")
+        self.assertEqual(candidate_event.kwargs["role"], "status")
+        self.assertEqual(candidate_event.kwargs["aria_live"], "polite")
+        self.assertTrue(candidate_event.kwargs["has_quantity"])
+        self.assertEqual(candidate_event.kwargs["moved_count"], 19)
+        popup = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_popup")
+        self.assertEqual(popup.kwargs["moved_count"], 19)
+        self.assertEqual(popup.kwargs["feedback_source"], "browser_positive_feedback")
+        self.assertNotIn("raw_text", popup.kwargs)
+        self.assertNotIn("html", popup.kwargs)
+
+    def test_live_region_alert_uses_quantity_and_english_variant(self):
+        candidate = _FeedbackCandidate("Moved 8 photos to Trash", role="alert")
+        page = Mock()
+        page.locator.side_effect = lambda selector: _FeedbackLocator([candidate]) if selector == '[role="alert"]' else _FeedbackLocator()
+        page.get_by_text.return_value = _FeedbackLocator()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._trash_feedback_visible())
+        popup = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_popup")
+        self.assertEqual(popup.kwargs["moved_count"], 8)
+
+    def test_live_region_without_role_is_observed_and_parsed(self):
+        candidate = _FeedbackCandidate("Spostata 1 foto nel Cestino", aria_live="polite")
+        page = Mock()
+        page.locator.side_effect = lambda selector: _FeedbackLocator([candidate]) if selector == '[aria-live]' else _FeedbackLocator()
+        page.get_by_text.return_value = _FeedbackLocator()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._trash_feedback_visible())
+        popup = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_popup")
+        self.assertEqual(popup.kwargs["moved_count"], 1)
+
+    def test_overlapping_live_region_selectors_emit_one_positive_popup(self):
+        candidate = _FeedbackCandidate(
+            "Moved 2 photos to Trash", role="status", aria_live="polite"
+        )
+        page = Mock()
+        page.locator.side_effect = lambda _selector: _FeedbackLocator([candidate])
+        page.get_by_text.return_value = _FeedbackLocator()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._trash_feedback_visible())
+        popups = [call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_popup"]
+        self.assertEqual(len(popups), 1)
+        self.assertEqual(popups[0].kwargs["moved_count"], 2)
+
+    def test_hidden_live_region_is_not_positive_feedback(self):
+        candidate = _FeedbackCandidate("Spostate 19 foto nel Cestino", visible=False, role="status")
+        page = Mock()
+        page.locator.side_effect = lambda _selector: _FeedbackLocator([candidate])
+        page.get_by_text.return_value = _FeedbackLocator()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertFalse(browser._trash_feedback_visible())
+        self.assertFalse(any(call.args[0] == "trash_feedback_popup" for call in diagnostic.event.call_args_list))
+
+    def test_visible_live_region_without_quantity_is_not_positive_feedback(self):
+        candidate = _FeedbackCandidate("Spostate foto nel Cestino", role="status")
+        page = Mock()
+        page.locator.side_effect = lambda _selector: _FeedbackLocator([candidate])
+        page.get_by_text.return_value = _FeedbackLocator()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertFalse(browser._trash_feedback_visible())
+
+    def test_live_region_locator_failure_logs_only_error_type(self):
+        page = Mock()
+        page.locator.side_effect = RuntimeError("popup text must not be logged")
+        page.get_by_text.return_value = _FeedbackLocator()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertFalse(browser._trash_feedback_visible())
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_dom_observation_failed")
+        self.assertEqual(event.kwargs["error_type"], "RuntimeError")
+        self.assertNotIn("error_message", event.kwargs)
 
     def test_trash_feedback_accepts_quantity_popup_variants_and_logs_count_only(self):
         from unittest.mock import Mock

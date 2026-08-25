@@ -50,6 +50,15 @@ class PlaywrightBrowser:
     MEDIA_SELECTORS = (
         '[role="checkbox"][aria-checked="false"][aria-label*=" - "]',
     )
+    TRASH_FEEDBACK_LIVE_REGION_SELECTORS = (
+        ("status", '[role="status"]'),
+        ("alert", '[role="alert"]'),
+        ("aria_live", '[aria-live]'),
+    )
+    TRASH_FEEDBACK_POPUP_PATTERN = re.compile(
+        r"(?i)\b(?:moved|spostat[oaie])\s+(\d+)\s+"
+        r"(?:photos?|foto)\b.*\b(?:trash|bin|cestin[oi])\b"
+    )
 
     def __init__(
         self,
@@ -567,9 +576,110 @@ class PlaywrightBrowser:
         """Check an exact accessible label without unsafe CSS interpolation."""
         return self.page.get_by_role("checkbox", name=label, exact=True).count() > 0
 
+    @staticmethod
+    def _normalize_feedback_role(value: str | None) -> str:
+        if value is None:
+            return "missing"
+        normalized = value.strip().lower()
+        if normalized in {"status", "alert", "log"}:
+            return normalized
+        if normalized in {"", "generic"}:
+            return "generic" if normalized else "missing"
+        return "other"
+
+    @staticmethod
+    def _normalize_feedback_aria_live(value: str | None) -> str:
+        if value is None:
+            return "missing"
+        normalized = value.strip().lower()
+        if normalized in {"off", "polite", "assertive"}:
+            return normalized
+        if not normalized:
+            return "missing"
+        return "other"
+
+    def _observe_trash_feedback_live_regions(self) -> bool:
+        for selector_kind, selector in self.TRASH_FEEDBACK_LIVE_REGION_SELECTORS:
+            matched_count = 0
+            visible_count = 0
+            role_counts: dict[str, int] = {}
+            aria_live_counts: dict[str, int] = {}
+            visible_candidates: list[tuple[str, str, int | None]] = []
+            try:
+                locator = self.page.locator(selector)
+                matched_count = locator.count()
+                if not isinstance(matched_count, int):
+                    continue
+                for index in range(matched_count):
+                    candidate = locator.first if index == 0 else locator.nth(index)
+                    role = self._normalize_feedback_role(candidate.get_attribute("role"))
+                    aria_live = self._normalize_feedback_aria_live(candidate.get_attribute("aria-live"))
+                    role_counts[role] = role_counts.get(role, 0) + 1
+                    aria_live_counts[aria_live] = aria_live_counts.get(aria_live, 0) + 1
+                    if not candidate.is_visible():
+                        continue
+                    visible_count += 1
+                    rendered_text = candidate.inner_text()
+                    moved_count = None
+                    if isinstance(rendered_text, str):
+                        match = self.TRASH_FEEDBACK_POPUP_PATTERN.search(rendered_text)
+                        if match is not None:
+                            moved_count = int(match.group(1))
+                    visible_candidates.append((role, aria_live, moved_count))
+            except Exception as exc:
+                if getattr(self, "diagnostic", None) is not None:
+                    self.diagnostic.event(
+                        "trash_feedback_dom_observation_failed",
+                        "ERROR",
+                        selector_group="live_region",
+                        selector_kind=selector_kind,
+                        error_type=type(exc).__name__,
+                    )
+                return False
+            if getattr(self, "diagnostic", None) is not None:
+                self.diagnostic.event(
+                    "trash_feedback_dom_observation",
+                    selector_group="live_region",
+                    selector_kind=selector_kind,
+                    matched_count=matched_count,
+                    visible_count=visible_count,
+                    candidate_role_counts=role_counts,
+                    candidate_aria_live_counts=aria_live_counts,
+                )
+                for role, aria_live, moved_count in visible_candidates:
+                    candidate_event = {
+                        "candidate_kind": "live_region",
+                        "popup_kind": "unknown",
+                        "visible": True,
+                        "role": role,
+                        "aria_live": aria_live,
+                        "has_quantity": moved_count is not None,
+                        "quantity_parseable": moved_count is not None,
+                    }
+                    if moved_count is not None:
+                        candidate_event["moved_count"] = moved_count
+                    self.diagnostic.event("trash_feedback_candidate", **candidate_event)
+            for _role, _aria_live, moved_count in visible_candidates:
+                if moved_count is None:
+                    continue
+                self.last_feedback_source = "browser_positive_feedback"
+                if getattr(self, "diagnostic", None) is not None:
+                    self.diagnostic.event(
+                        "trash_feedback_popup",
+                        popup_kind="bottom_left_toast",
+                        popup_selector=selector_kind,
+                        moved_count=moved_count,
+                        positive_feedback=True,
+                        feedback_source=self.last_feedback_source,
+                    )
+                return True
+        return False
+
     def _trash_feedback_visible(self) -> bool:
         """Require visible Google Photos Trash feedback, parsing popup count."""
         self.last_feedback_source = None
+        if self._observe_trash_feedback_live_regions():
+            return True
         legacy_feedback = (
             "Moved to trash",
             "Moved to Trash",
@@ -632,10 +742,7 @@ class PlaywrightBrowser:
                     )
                 return True
 
-        popup_pattern = re.compile(
-            r"(?i)\b(?:moved|spostat[oaie])\s+(\d+)\s+"
-            r"(?:photos?|foto)\b.*\b(?:trash|bin|cestin[oi])\b"
-        )
+        popup_pattern = self.TRASH_FEEDBACK_POPUP_PATTERN
         try:
             popup_locator = self.page.get_by_text(popup_pattern, exact=False)
             popup_count = popup_locator.count()
