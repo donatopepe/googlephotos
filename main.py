@@ -24,7 +24,19 @@ def configure_logging(log_file):
     return logger
 
 
-def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pending, checkpoint, browser=None, browser_cleanup="not_started"):
+def emit_terminal_summary(
+    diagnostic,
+    *,
+    outcome,
+    stop_requested,
+    processed,
+    pending,
+    checkpoint,
+    browser=None,
+    browser_cleanup="not_started",
+    checkpoint_state=None,
+    checkpoint_reason=None,
+):
     diagnostic.event(
         "cleaner_stopped",
         "WARNING" if stop_requested or outcome in {"failed", "interrupted", "failed_close"} else "INFO",
@@ -40,6 +52,8 @@ def emit_terminal_summary(diagnostic, *, outcome, stop_requested, processed, pen
         profile_lock_owner_pid=getattr(getattr(browser, "profile_lock", None), "pid", None) if browser is not None else None,
         profile_lock_owned=getattr(getattr(browser, "profile_lock", None), "acquired", None) if browser is not None else None,
         browser_cleanup=browser_cleanup,
+        checkpoint_state=checkpoint_state,
+        checkpoint_reason=checkpoint_reason,
         result="terminal_summary",
         positive_feedback=False,
         feedback_source=None,
@@ -60,6 +74,9 @@ def run(argv=None) -> int:
     browser_cleanup = "not_started"
     cleaner_stop_requested = False
     processed_total = 0
+    exit_code = 0
+    checkpoint_state = None
+    checkpoint_reason = None
     try:
         browser = PlaywrightBrowser(
             args.profile_dir,
@@ -121,11 +138,20 @@ def run(argv=None) -> int:
         processed_total = processed or 0
         run_outcome = cleaner.last_outcome.value
         cleaner_stop_requested = bool(getattr(cleaner, "stop_requested", False))
-        return 0
     except KeyboardInterrupt:
         run_outcome = "interrupted"
         logger.warning("Interrupted by user")
-        return 130
+        checkpoint_state = "interrupted"
+        checkpoint_reason = "keyboard_interrupt"
+        checkpoint.save(
+            batch=processed_total,
+            photos=processed_total,
+            state=checkpoint_state,
+            reason=checkpoint_reason,
+            run_id=diagnostic.run_id,
+            **process_context(),
+        )
+        exit_code = 130
     except (CleanerError, OSError, RuntimeError) as exc:
         cleaner_outcome = getattr(locals().get("cleaner"), "last_outcome", None)
         run_outcome = (
@@ -134,14 +160,17 @@ def run(argv=None) -> int:
             else "failed"
         )
         logger.error("Stopped safely: %s", exc)
+        checkpoint_state = "ambiguous" if run_outcome == "destructive_ambiguous" else "scan_failed"
+        checkpoint_reason = type(exc).__name__
         checkpoint.save(
             batch=processed_total,
             photos=processed_total,
-            state="ambiguous" if run_outcome == "destructive_ambiguous" else "scan_failed",
-            reason=type(exc).__name__,
+            state=checkpoint_state,
+            reason=checkpoint_reason,
             run_id=diagnostic.run_id,
             **process_context(),
         )
+        exit_code = 1
         diagnostic.event(
             "run_failed",
             "ERROR",
@@ -186,14 +215,32 @@ def run(argv=None) -> int:
             except Exception as close_error:
                 browser_cleanup = "failed"
                 run_outcome = "failed_close"
+                checkpoint_state = "close_failed"
+                checkpoint_reason = "browser_close_failed"
+                checkpoint.save(
+                    batch=processed_total,
+                    photos=processed_total,
+                    state=checkpoint_state,
+                    reason=checkpoint_reason,
+                    run_id=diagnostic.run_id,
+                    **process_context(),
+                )
+                exit_code = 1
                 diagnostic.event(
                     "browser_close_failed",
                     "ERROR",
                     error_type=type(close_error).__name__,
                     error_message=str(close_error),
+                    result="close_failed",
+                    positive_feedback=False,
+                    feedback_source=None,
                 )
         if run_outcome is None:
             run_outcome = "finished"
+        checkpoint_snapshot = checkpoint.load()
+        if checkpoint_snapshot is not None:
+            checkpoint_state = checkpoint_snapshot.get("state")
+            checkpoint_reason = checkpoint_snapshot.get("reason")
         emit_terminal_summary(
             diagnostic,
             outcome=run_outcome,
@@ -203,6 +250,8 @@ def run(argv=None) -> int:
             checkpoint=checkpoint,
             browser=browser,
             browser_cleanup=browser_cleanup,
+            checkpoint_state=checkpoint_state,
+            checkpoint_reason=checkpoint_reason,
         )
         diagnostic.event(
             "run_finished",
@@ -220,10 +269,13 @@ def run(argv=None) -> int:
             profile_lock_owner_pid=getattr(getattr(browser, "profile_lock", None), "pid", None) if browser is not None else None,
             profile_lock_owned=getattr(getattr(browser, "profile_lock", None), "acquired", None) if browser is not None else None,
             browser_cleanup=browser_cleanup,
+            checkpoint_state=checkpoint_state,
+            checkpoint_reason=checkpoint_reason,
             result="run_finished",
             positive_feedback=False,
             feedback_source=None,
         )
+    return exit_code
 
 
 if __name__ == "__main__":
