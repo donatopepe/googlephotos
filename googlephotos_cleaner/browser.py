@@ -671,7 +671,7 @@ class PlaywrightBrowser:
                     check=checks,
                     target_count=self._target_count(label),
                     positive_feedback=feedback,
-                    feedback_source="browser_positive_feedback" if feedback else None,
+                    feedback_source=self.last_feedback_source if feedback else None,
                 )
             if feedback:
                 return True
@@ -686,7 +686,7 @@ class PlaywrightBrowser:
                 checks=checks,
                 target_count=self._target_count(label),
                 positive_feedback=feedback,
-                feedback_source="browser_positive_feedback" if feedback else None,
+                feedback_source=self.last_feedback_source if feedback else None,
             )
         return feedback
 

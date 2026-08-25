@@ -1355,6 +1355,36 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             browser.wait_for_target_absence("Foto - 2 ago", timeout_ms=0)
 
+    def test_wait_for_target_absence_logs_observer_source_on_positive_feedback(self):
+        page = Mock()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+        browser._trash_feedback_visible = Mock(return_value=True)
+        browser.last_feedback_source = "browser_positive_feedback"
+        browser._target_count = Mock(return_value=0)
+
+        self.assertTrue(browser.wait_for_target_absence("Foto - 2 ago", timeout_ms=1000))
+
+        call = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_reconcile_check")
+        self.assertEqual(call.kwargs["feedback_source"], "browser_positive_feedback")
+
+    def test_wait_for_target_absence_logs_null_source_when_positive_feedback_has_no_source(self):
+        page = Mock()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+        browser._trash_feedback_visible = Mock(return_value=True)
+        browser.last_feedback_source = None
+        browser._target_count = Mock(return_value=0)
+
+        self.assertTrue(browser.wait_for_target_absence("Foto - 2 ago", timeout_ms=1000))
+
+        call = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_reconcile_check")
+        self.assertIsNone(call.kwargs["feedback_source"])
+
     def test_wait_for_target_absence_logs_final_positive_feedback_source(self):
         page = Mock()
         feedback = Mock()
