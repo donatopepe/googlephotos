@@ -28,6 +28,8 @@ Failure invocation:
 - No automatic Trash retry after ambiguity.
 - Positive Google Photos feedback remains required.
 - No credentials/cookies/tokens/raw page content in journal.
+- For debugging only, public client-side HTML/JavaScript may be inspected transiently in memory through the approved browser tooling; it must not be written to files, inserted into JSONL, or retained in handoff/artifacts. Never inspect or persist passwords, cookies, tokens, headers, media URLs, session data, or challenge material.
+- Do not copy or reproduce proprietary anti-robot controls or use inspection to bypass CAPTCHA/challenges.
 - Preserve `/home/public/googlephotos/data/browser-profile`.
 - Do not touch unrelated PID 1869.
 

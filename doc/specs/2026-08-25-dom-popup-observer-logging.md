@@ -8,7 +8,7 @@ Make the Google Photos Trash-feedback observer diagnosable when the visible bott
 
 The change is limited to `googlephotos_cleaner/browser.py` and its unit tests. It adds metadata-only observation of candidate live regions before the existing quantity-bearing text fallback. It does not change Trash click behavior, pending/checkpoint transitions, retry policy, profile handling, or live-run procedure.
 
-Out of scope: capturing HTML, page content, accessibility snapshots, screenshots, raw popup text, URLs, media identifiers, cookies, headers, credentials, or an operator-attestation mechanism.
+Out of scope during normal operation: capturing HTML, page content, accessibility snapshots, screenshots, raw popup text, URLs, media identifiers, cookies, headers, credentials, or an operator-attestation mechanism. Debug-only public client-side HTML/JavaScript inspection may occur transiently in memory through approved browser tooling, but must never be saved, logged, or copied into artifacts. It must exclude secrets, session/media data, and anti-robot challenge material; proprietary anti-robot controls must not be copied or reproduced.
 
 ## Design
 

@@ -10,6 +10,11 @@ data/*.jsonl
 data/checkpoint.json
 data/pending-action.json
 data/diagnostics/
+data/inspection/
+data/launch/
 *.log
+.pi-loop.json
+.pi-loop.json.lock
+.worktrees/
 .env
 .DS_Store
