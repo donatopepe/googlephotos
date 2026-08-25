@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from googlephotos_cleaner.automation import Cleaner, CleanerError
+from googlephotos_cleaner.automation import Cleaner, CleanerError, PassOutcome
 from googlephotos_cleaner.browser import PlaywrightBrowser
 from googlephotos_cleaner.cli import parse_args
 from googlephotos_cleaner.diagnostics import CheckpointStore, DiagnosticLog, PendingActionStore, process_context
@@ -60,6 +60,14 @@ def emit_terminal_summary(
         **process_context(),
     )
 
+
+def _terminal_checkpoint_for_failure(outcome, error_type):
+    mapping = {
+        PassOutcome.PENDING_UNRESOLVED.value: ("pending", "pending_reconciliation_failed"),
+        PassOutcome.DESTRUCTIVE_AMBIGUOUS.value: ("ambiguous", "destructive_action_ambiguous"),
+        PassOutcome.STOP_SAFE.value: ("bounded_stop", "safe_stop_failed"),
+    }
+    return mapping.get(outcome, ("scan_failed", error_type))
 
 def run(argv=None) -> int:
     args = parse_args(argv)
@@ -160,8 +168,10 @@ def run(argv=None) -> int:
             else "failed"
         )
         logger.error("Stopped safely: %s", exc)
-        checkpoint_state = "ambiguous" if run_outcome == "destructive_ambiguous" else "scan_failed"
-        checkpoint_reason = type(exc).__name__
+        checkpoint_state, checkpoint_reason = _terminal_checkpoint_for_failure(
+            run_outcome,
+            type(exc).__name__,
+        )
         checkpoint.save(
             batch=processed_total,
             photos=processed_total,
@@ -176,6 +186,9 @@ def run(argv=None) -> int:
             "ERROR",
             error_type=type(exc).__name__,
             error_message=str(exc),
+            outcome=run_outcome,
+            checkpoint_state=checkpoint_state,
+            checkpoint_reason=checkpoint_reason,
             recovery="diagnostics_capture_attempted",
             result="failed",
             positive_feedback=False,
