@@ -128,6 +128,26 @@ class BrowserAdapterTests(unittest.TestCase):
         with self.assertRaises(CleanerError):
             Cleaner(browser, max_retries=4).run()
 
+    def test_scan_failure_saves_terminal_checkpoint_context(self):
+        class FailedBrowser(FakeBrowser):
+            def select_visible_batch(self, batch_size):
+                raise TimeoutError("scan timeout")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="scan-failure-checkpoint")
+            with self.assertRaises(CleanerError):
+                Cleaner(FailedBrowser([]), day_mode=False, max_retries=0, checkpoint=checkpoint, diagnostic=diagnostic).run()
+            saved = __import__("json").loads(checkpoint.path.read_text())
+            self.assertEqual(saved["state"], "scan_failed")
+            self.assertEqual(saved["reason"], "max_retries")
+            self.assertEqual(saved["run_id"], "scan-failure-checkpoint")
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            failed = next(event for event in events if event["phase"] == "scan_failed")
+            self.assertEqual(failed["result"], "scan_failed")
+            self.assertFalse(failed["positive_feedback"])
+            self.assertIsNone(failed["feedback_source"])
+
     def test_cleaner_reports_unauthenticated_session(self):
         browser = FakeBrowser([])
         browser.authenticated = False

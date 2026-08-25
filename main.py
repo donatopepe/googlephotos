@@ -59,6 +59,7 @@ def run(argv=None) -> int:
     run_outcome = None
     browser_cleanup = "not_started"
     cleaner_stop_requested = False
+    processed_total = 0
     try:
         browser = PlaywrightBrowser(
             args.profile_dir,
@@ -117,6 +118,7 @@ def run(argv=None) -> int:
         # One invocation owns one bounded pass. Cleaner handles bounded
         # recovery and terminal stop; never re-enter pass loop.
         processed = cleaner.run()
+        processed_total = processed or 0
         run_outcome = cleaner.last_outcome.value
         cleaner_stop_requested = bool(getattr(cleaner, "stop_requested", False))
         return 0
@@ -132,12 +134,23 @@ def run(argv=None) -> int:
             else "failed"
         )
         logger.error("Stopped safely: %s", exc)
+        checkpoint.save(
+            batch=processed_total,
+            photos=processed_total,
+            state="ambiguous" if run_outcome == "destructive_ambiguous" else "scan_failed",
+            reason=type(exc).__name__,
+            run_id=diagnostic.run_id,
+            **process_context(),
+        )
         diagnostic.event(
             "run_failed",
             "ERROR",
             error_type=type(exc).__name__,
             error_message=str(exc),
             recovery="diagnostics_capture_attempted",
+            result="failed",
+            positive_feedback=False,
+            feedback_source=None,
         )
         if browser is not None:
             try:
