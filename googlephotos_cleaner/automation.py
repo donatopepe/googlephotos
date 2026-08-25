@@ -235,6 +235,9 @@ class Cleaner:
                         target=previous["label"],
                         count=previous.get("count"),
                         policy=self.pending_policy,
+                        positive_feedback=False,
+                        feedback_source=None,
+                        result="discarded_without_reconciliation",
                     )
                     previous = None
                 else:
