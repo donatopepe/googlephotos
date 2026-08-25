@@ -270,6 +270,33 @@ class MainFlowTests(unittest.TestCase):
         self.assertFalse(reconciled["positive_feedback"])
         self.assertIsNone(reconciled["feedback_source"])
 
+    def test_reconcile_pending_without_journal_is_safe_noop(self):
+        import json
+        import main
+        from unittest.mock import patch
+
+        class Browser:
+            profile_dir = Path("profile")
+            profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+            page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+            context = type("Context", (), {"pages": [page]})()
+            def close(self):
+                pass
+            def wait_until_authenticated(self):
+                self.auth_calls = getattr(self, "auth_calls", 0) + 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            import json as json_module
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", return_value=Browser()):
+                self.assertEqual(main.run(["--reconcile-pending", "--exit-on-error", "--log-file", str(log), "--checkpoint-file", str(Path(tmp) / "checkpoint.json"), "--profile-dir", str(Path(tmp) / "profile")]), 0)
+            events = [json_module.loads(line) for line in log.with_name("run.jsonl").read_text().splitlines()]
+
+        self.assertEqual(sum(event["phase"] == "run_started" for event in events), 1)
+        self.assertEqual(sum(event["phase"] == "cleaner_stopped" for event in events), 1)
+        self.assertEqual(sum(event["phase"] == "run_finished" for event in events), 1)
+        self.assertEqual(next(event for event in events if event["phase"] == "cleaner_stopped")["outcome"], "pass_done")
+
     def test_main_preserves_cleaner_ambiguous_outcome(self):
         import json
         import main

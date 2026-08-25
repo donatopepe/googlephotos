@@ -250,6 +250,27 @@ class Cleaner:
                     feedback_source=None,
                 )
                 return 0
+            if self.reconcile_pending_only and not previous:
+                self.last_outcome = PassOutcome.PASS_DONE
+                self.stop_requested = True
+                self._event(
+                    "pending_reconciliation_skipped",
+                    "INFO",
+                    reason="no_pending_action",
+                    result="nothing_to_reconcile",
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
+                self._event(
+                    "cleaner_terminal_state",
+                    "INFO",
+                    outcome=self.last_outcome.value,
+                    stop_requested=True,
+                    pending_exists=False,
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
+                return 0
             if previous and self.reconcile_pending_only:
                 wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
                 feedback_source = None
