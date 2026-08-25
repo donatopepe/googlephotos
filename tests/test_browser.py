@@ -1347,6 +1347,24 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertTrue(browser._trash_feedback_visible())
 
+    def test_wait_for_target_absence_timeout_emits_final_reconciliation_source(self):
+        from unittest.mock import patch
+        page = Mock()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+        browser._trash_feedback_visible = Mock(return_value=False)
+        browser._target_count = Mock(return_value=1)
+
+        with patch("googlephotos_cleaner.browser.time.monotonic", side_effect=[0, 10]):
+            self.assertFalse(browser.wait_for_target_absence("Foto - 2 ago", timeout_ms=1000))
+
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_reconcile_timeout")
+        self.assertTrue(event.kwargs["final"])
+        self.assertFalse(event.kwargs["positive_feedback"])
+        self.assertIsNone(event.kwargs["feedback_source"])
+
     def test_wait_for_target_absence_records_terminal_observer_error(self):
         from unittest.mock import patch
         diagnostic = Mock()
@@ -1371,6 +1389,22 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             browser.wait_for_target_absence("Foto - 2 ago", timeout_ms=0)
+
+    def test_wait_for_target_absence_positive_return_emits_final_terminal_event(self):
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.diagnostic = diagnostic
+        browser._trash_feedback_visible = Mock(return_value=True)
+        browser.last_feedback_source = "browser_positive_feedback"
+        browser._target_count = Mock(return_value=0)
+
+        self.assertTrue(browser.wait_for_target_absence("Foto - 2 ago", timeout_ms=1000))
+
+        events = [call for call in diagnostic.event.call_args_list if call.args[0] == "trash_reconcile_check"]
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0].kwargs["final"])
+        self.assertTrue(events[0].kwargs["positive_feedback"])
+        self.assertEqual(events[0].kwargs["feedback_source"], "browser_positive_feedback")
 
     def test_wait_for_target_absence_positive_return_keeps_actual_source(self):
         diagnostic = Mock()

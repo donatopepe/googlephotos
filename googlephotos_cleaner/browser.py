@@ -671,6 +671,7 @@ class PlaywrightBrowser:
                         timeout_ms=timeout_ms,
                         check=checks,
                         target_count=self._target_count(label),
+                        final=bool(feedback),
                         positive_feedback=feedback,
                         feedback_source=self.last_feedback_source if feedback else None,
                     )
@@ -702,6 +703,7 @@ class PlaywrightBrowser:
                 timeout_ms=timeout_ms,
                 checks=checks,
                 target_count=self._target_count(label),
+                final=True,
                 positive_feedback=feedback,
                 feedback_source=self.last_feedback_source if feedback else None,
             )
