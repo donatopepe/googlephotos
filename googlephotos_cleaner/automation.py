@@ -370,7 +370,7 @@ class Cleaner:
                     count=len(media_ids),
                     positive_feedback=True,
                     result="confirmed",
-                    feedback_source="browser_positive_feedback",
+                    feedback_source=getattr(self.browser, "last_feedback_source", None),
                 )
                 self.logger.info("Moved %d photos to Trash", len(media_ids))
 
