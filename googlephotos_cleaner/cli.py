@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--diagnostics-dir",
         type=Path,
         default=Path("data/diagnostics"),
-        help="directory for error screenshots and HTML snapshots",
+        help="directory for error screenshots (no page-content artifacts)",
     )
     parser.add_argument(
         "--checkpoint-file",
