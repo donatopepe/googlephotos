@@ -544,7 +544,9 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             popup.count.return_value = 1
             popup.first = popup
             popup.first.is_visible.return_value = True
-            page.get_by_text.side_effect = lambda text, exact=False, phrase=phrase: popup if text == phrase else Mock(count=lambda: 0)
+            popup.first.inner_text.return_value = phrase
+            page.locator.return_value = Mock(count=lambda: 0)
+            page.get_by_text.side_effect = lambda query, exact=False, popup=popup, phrase=phrase: popup if getattr(query, "search", lambda _: False)(phrase) else Mock(count=lambda: 0)
             diagnostic = Mock()
             browser = object.__new__(PlaywrightBrowser)
             browser.page = page
@@ -556,6 +558,31 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             self.assertEqual(event.kwargs["popup_kind"], "bottom_left_toast")
             self.assertNotIn("raw_text", event.kwargs)
 
+    def test_trash_feedback_parses_dynamic_quantity_from_text_fallback(self):
+        from unittest.mock import Mock
+        page = Mock()
+        empty = Mock()
+        empty.count.return_value = 0
+        page.locator.return_value = empty
+        popup = Mock()
+        popup.count.return_value = 1
+        popup.first = popup
+        popup.first.is_visible.return_value = True
+        popup.first.inner_text.return_value = "Spostate 19 foto nel Cestino"
+
+        def get_by_text(pattern, exact=False):
+            return popup if hasattr(pattern, "search") else empty
+
+        page.get_by_text.side_effect = get_by_text
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+
+        self.assertTrue(browser._trash_feedback_visible())
+        event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_feedback_popup")
+        self.assertEqual(event.kwargs["moved_count"], 19)
+
     def test_trash_feedback_rejects_visible_confirmation_without_quantity(self):
         from unittest.mock import Mock
         page = Mock()
@@ -563,7 +590,9 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         popup.count.return_value = 1
         popup.first = popup
         popup.first.is_visible.return_value = True
-        page.get_by_text.side_effect = lambda text, exact=False: popup if text == "Spostate foto nel Cestino" else Mock(count=lambda: 0)
+        popup.first.inner_text.return_value = "Spostate foto nel Cestino"
+        page.locator.return_value = Mock(count=lambda: 0)
+        page.get_by_text.side_effect = lambda query, exact=False, popup=popup: popup if query == "Spostate foto nel Cestino" else Mock(count=lambda: 0)
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
 
@@ -1573,7 +1602,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
     def test_wait_for_target_absence_polls_for_positive_feedback_without_clicking(self):
         page = Mock()
         # Feedback labels are checked before each polling wait.
-        page.get_by_text.return_value.count.side_effect = [0] * 7 + [1]
+        page.get_by_text.return_value.count.side_effect = [0] * 14 + [1]
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
 
