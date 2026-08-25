@@ -546,7 +546,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             browser.wait_for_target_absence("Foto - test", timeout_ms=0)
 
-    def test_capture_diagnostics_writes_screenshot_and_html(self):
+    def test_capture_diagnostics_writes_screenshot_without_page_content(self):
         page = Mock()
         page.url = "https://photos.google.com/?authuser=secret"
         page.content.return_value = "<html>diagnostic</html>"
@@ -556,9 +556,10 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = browser.capture_diagnostics(Path(tmp), "layout-error")
 
-            self.assertEqual(paths["html"].read_text(), "<html>diagnostic</html>")
+            self.assertNotIn("html", paths)
             self.assertTrue(paths["screenshot"].name.endswith(".png"))
             page.screenshot.assert_called_once_with(path=str(paths["screenshot"]), full_page=True)
+            page.content.assert_not_called()
 
     def test_selection_uses_fixed_item_locator_and_verifies_selected_items(self):
         self.assertIn(

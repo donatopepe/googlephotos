@@ -70,6 +70,7 @@ class MainFlowTests(unittest.TestCase):
 
         finished = next(event for event in events if event["phase"] == "run_finished")
         self.assertEqual(finished["outcome"], "interrupted")
+        self.assertTrue(all("html" not in event for event in events))
 
     def test_main_preserves_cleaner_ambiguous_outcome(self):
         import json

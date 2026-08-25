@@ -992,10 +992,8 @@ class PlaywrightBrowser:
             for character in reason
         )[:80] or "error"
         screenshot = directory / f"{safe_reason}.png"
-        html = directory / f"{safe_reason}.html"
         self.page.screenshot(path=str(screenshot), full_page=True)
-        html.write_text(self.page.content(), encoding="utf-8")
-        return {"screenshot": screenshot, "html": html}
+        return {"screenshot": screenshot}
 
     def close(self) -> None:
         close_error = None
