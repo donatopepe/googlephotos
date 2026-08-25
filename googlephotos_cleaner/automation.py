@@ -195,7 +195,15 @@ class Cleaner:
                 )
                 self.stop_requested = True
                 self.last_outcome = PassOutcome.PENDING_UNRESOLVED
-                self._event("cleaner_terminal_state", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
+                self._event(
+                    "cleaner_terminal_state",
+                    "WARNING",
+                    outcome=self.last_outcome.value,
+                    stop_requested=True,
+                    pending_exists=True,
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
                 return 0
             if previous and self.pending_policy == "discard":
                 self.pending.clear()
@@ -230,7 +238,15 @@ class Cleaner:
                 )
                 self.stop_requested = True
                 self.last_outcome = PassOutcome.PENDING_UNRESOLVED
-                self._event("cleaner_terminal_state", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
+                self._event(
+                    "cleaner_terminal_state",
+                    "WARNING",
+                    outcome=self.last_outcome.value,
+                    stop_requested=True,
+                    pending_exists=True,
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
                 return 0
             if previous and previous.get("kind") == "media_batch":
                 if self.discard_ambiguous_media_batches or self.pending_policy == "discard":
@@ -436,6 +452,15 @@ class Cleaner:
                         self.checkpoint.save(batch=processed, photos=total_photos, state="ambiguous")
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
+                    self._event(
+                        "cleaner_terminal_state",
+                        "WARNING",
+                        outcome=self.last_outcome.value,
+                        stop_requested=True,
+                        pending_exists=self.pending is not None and self.pending.load() is not None,
+                        positive_feedback=False,
+                        feedback_source=None,
+                    )
                     raise error
                 if self.pending:
                     self.pending.clear()

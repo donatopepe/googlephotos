@@ -255,6 +255,22 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertIsNone(inspected["feedback_source"])
             self.assertEqual(inspected["result"], "policy_blocked")
 
+    def test_cleaner_terminal_destructive_outcome_declares_no_positive_proof(self):
+        class NoSourceBrowser(FakeBrowser):
+            last_feedback_source = None
+
+        browser = NoSourceBrowser([["old-1"]])
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="terminal-ambiguous-evidence")
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(browser, diagnostic=diagnostic, day_mode=False, max_batches=1).run()
+
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            terminal = next(event for event in events if event["phase"] == "cleaner_terminal_state")
+            self.assertEqual(terminal["outcome"], "destructive_ambiguous")
+            self.assertFalse(terminal["positive_feedback"])
+            self.assertIsNone(terminal["feedback_source"])
+
     def test_pending_loaded_event_declares_observation_not_proof(self):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")
@@ -267,6 +283,20 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(loaded["result"], "observed")
             self.assertFalse(loaded["positive_feedback"])
             self.assertIsNone(loaded["feedback_source"])
+
+    def test_cleaner_terminal_pending_outcome_declares_no_positive_proof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="terminal-pending-evidence")
+            cleaner = Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block")
+            cleaner.run()
+
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            terminal = next(event for event in events if event["phase"] == "cleaner_terminal_state")
+            self.assertEqual(terminal["outcome"], "pending_unresolved")
+            self.assertFalse(terminal["positive_feedback"])
+            self.assertIsNone(terminal["feedback_source"])
 
     def test_pending_dry_run_event_has_non_proof_result(self):
         with tempfile.TemporaryDirectory() as tmp:
