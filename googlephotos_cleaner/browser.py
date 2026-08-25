@@ -568,26 +568,33 @@ class PlaywrightBrowser:
         return self.page.get_by_role("checkbox", name=label, exact=True).count() > 0
 
     def _trash_feedback_visible(self) -> bool:
-        """Require visible quantity-bearing Google Photos completion toast."""
+        """Require visible Google Photos Trash feedback, parsing popup count."""
         self.last_feedback_source = None
-        feedback = (
+        legacy_feedback = (
             "Moved to trash",
             "Moved to Trash",
             "Spostato nel cestino",
             "Spostata nel cestino",
+            "Spostati nel cestino",
+            "Spostato nel Cestino",
             "Moved to bin",
-            "Spostate 8 foto nel Cestino",
-            "Moved 8 photos to Trash",
         )
-        popup_patterns = (
-            re.compile(r"(?i)\b(?:moved|spostat[oaie])\s+(\d+)\s+(?:photos?|foto)\b.*\b(?:trash|bin|cestin[oi])\b"),
-        )
-        for text in feedback:
+        # Keep legacy checks first for existing adapter compatibility. They are
+        # visibility-gated and do not claim quantity-bearing popup proof.
+        for text in legacy_feedback:
             count = 0
             visible_count = 0
             try:
-                feedback_locator = self.page.get_by_text(text, exact=False)
-                count = feedback_locator.count()
+                locator = self.page.get_by_text(text, exact=False)
+                count = locator.count()
+                if not isinstance(count, int):
+                    continue
+                visible_target = None
+                for index in range(count):
+                    candidate = locator.first if index == 0 else locator.nth(index)
+                    if candidate.is_visible():
+                        visible_count += 1
+                        visible_target = candidate
             except Exception as exc:
                 if getattr(self, "diagnostic", None) is not None:
                     self.diagnostic.event(
@@ -602,68 +609,16 @@ class PlaywrightBrowser:
                         positive_feedback=False,
                     )
                 return False
-            visible_count = 0
-            visible_target = None
-            for index in range(count):
-                try:
-                    candidate = feedback_locator.first if index == 0 else feedback_locator.nth(index)
-                    if candidate.is_visible():
-                        visible_count += 1
-                        visible_target = candidate
-                except (AttributeError, TypeError) as exc:
-                    if getattr(self, "diagnostic", None) is not None:
-                        self.diagnostic.event(
-                            "trash_feedback_check_failed",
-                            "ERROR",
-                            feedback_category=text,
-                            matched_count=count,
-                            visible_count=visible_count,
-                            feedback_source=None,
-                            error_type=type(exc).__name__,
-                            error_message=str(exc),
-                            positive_feedback=False,
-                        )
-                    return False
-                except Exception as exc:
-                    if getattr(self, "diagnostic", None) is not None:
-                        self.diagnostic.event(
-                            "trash_feedback_check_failed",
-                            "ERROR",
-                            feedback_category=text,
-                            matched_count=count,
-                            visible_count=visible_count,
-                            feedback_source=None,
-                            error_type=type(exc).__name__,
-                            error_message=str(exc),
-                            positive_feedback=False,
-                        )
-                    return False
-            popup_count = None
-            if visible_target is not None:
-                for pattern in popup_patterns:
-                    match = pattern.search(text)
-                    if match:
-                        popup_count = int(match.group(1))
-                        break
-            if visible_target is not None and popup_count is not None:
-                self.last_feedback_source = "browser_positive_feedback"
-                if getattr(self, "diagnostic", None) is not None:
-                    self.diagnostic.event(
-                        "trash_feedback_popup",
-                        popup_kind="bottom_left_toast",
-                        moved_count=popup_count,
-                        positive_feedback=True,
-                        feedback_source=self.last_feedback_source,
-                    )
-                return True
-            candidate_source = "browser_positive_feedback" if visible_count else ("dom_candidate_not_visible" if count else None)
+            source = "browser_positive_feedback" if visible_count else (
+                "dom_candidate_not_visible" if count else None
+            )
             if getattr(self, "diagnostic", None) is not None:
                 self.diagnostic.event(
                     "trash_feedback_candidate",
                     feedback_category=text,
                     matched_count=count,
                     visible_count=visible_count,
-                    feedback_source=candidate_source,
+                    feedback_source=source,
                 )
             if visible_target is not None:
                 self.last_feedback_source = "browser_positive_feedback"
@@ -676,6 +631,55 @@ class PlaywrightBrowser:
                         feedback_source=self.last_feedback_source,
                     )
                 return True
+
+        popup_pattern = re.compile(
+            r"(?i)\b(?:moved|spostat[oaie])\s+(\d+)\s+"
+            r"(?:photos?|foto)\b.*\b(?:trash|bin|cestin[oi])\b"
+        )
+        try:
+            popup_locator = self.page.get_by_text(popup_pattern, exact=False)
+            popup_count = popup_locator.count()
+            if isinstance(popup_count, int):
+                for index in range(popup_count):
+                    candidate = popup_locator.first if index == 0 else popup_locator.nth(index)
+                    if not candidate.is_visible():
+                        continue
+                    rendered_text = candidate.inner_text()
+                    if not isinstance(rendered_text, str):
+                        continue
+                    match = popup_pattern.search(rendered_text)
+                    if match is None:
+                        continue
+                    moved_count = int(match.group(1))
+                    self.last_feedback_source = "browser_positive_feedback"
+                    if getattr(self, "diagnostic", None) is not None:
+                        self.diagnostic.event(
+                            "trash_feedback_popup",
+                            popup_kind="bottom_left_toast",
+                            popup_selector="text_pattern",
+                            moved_count=moved_count,
+                            positive_feedback=True,
+                            feedback_source=self.last_feedback_source,
+                        )
+                    return True
+        except Exception as exc:
+            if getattr(self, "diagnostic", None) is not None:
+                self.diagnostic.event(
+                    "trash_feedback_check_failed",
+                    "ERROR",
+                    popup_selector="text_pattern",
+                    feedback_source=None,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    positive_feedback=False,
+                )
+            return False
+        if getattr(self, "diagnostic", None) is not None:
+            self.diagnostic.event(
+                "trash_feedback_popup_absent",
+                positive_feedback=False,
+                feedback_source=None,
+            )
         return False
 
     def wait_for_target_absence(self, label: str, timeout_ms: int = 30000) -> bool:
