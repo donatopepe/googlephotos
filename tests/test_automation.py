@@ -513,6 +513,19 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(saved["run_id"], "checkpoint-bounded")
             self.assertEqual(saved["pid"], __import__("os").getpid())
 
+    def test_cleaner_blocks_legacy_running_checkpoint_without_resuming(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            checkpoint.path.write_text(__import__("json").dumps({"batch": 1, "photos": 1, "state": "running"}))
+            browser = FakeBrowser([])
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="stale-checkpoint")
+            cleaner = Cleaner(browser, dry_run=True, checkpoint=checkpoint, diagnostic=diagnostic)
+            self.assertEqual(cleaner.run(), 0)
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            self.assertFalse(any(event["phase"] == "authenticated" for event in events))
+            self.assertTrue(any(event["phase"] == "checkpoint_stale" for event in events))
+            self.assertEqual(cleaner.last_outcome, PassOutcome.STOP_SAFE)
+
     def test_bounded_dry_run_day_pass_requests_stop(self):
         browser = FakeBrowser([("2 Aug", 1), ("1 Aug", 1)])
 

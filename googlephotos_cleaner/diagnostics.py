@@ -150,6 +150,22 @@ class CheckpointStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
+    def load(self) -> dict[str, Any] | None:
+        if not self.path.exists():
+            return None
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("state") == "running" and not payload.get("run_id"):
+            payload = dict(payload)
+            payload["state"] = "stale"
+            payload["reason"] = "legacy_running_without_run_identity"
+            payload["resumable"] = False
+        return payload
+
     def save(self, *, batch: int, photos: int, state: str, **extra: Any) -> None:
         payload = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
