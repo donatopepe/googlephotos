@@ -242,6 +242,18 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(completed["result"], "confirmed")
         self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
 
+    def test_pending_dry_run_event_has_non_proof_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-dry-evidence")
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, dry_run=True).run()
+
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            unresolved = next(event for event in events if event["phase"] == "pending_unresolved")
+            self.assertFalse(unresolved["positive_feedback"])
+            self.assertEqual(unresolved["result"], "policy_blocked_dry_run")
+
     def test_pending_reconciliation_does_not_clear_without_positive_source(self):
         class PendingBrowser(FakeBrowser):
             last_feedback_source = None
@@ -260,6 +272,18 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertIsNotNone(pending.load())
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
             self.assertTrue(any(event["phase"] == "pending_unresolved" for event in events))
+
+    def test_pending_block_event_has_non_proof_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-block-evidence")
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block").run()
+
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            skipped = next(event for event in events if event["phase"] == "pending_reconciliation_skipped")
+            self.assertFalse(skipped["positive_feedback"])
+            self.assertEqual(skipped["result"], "not_attempted")
 
     def test_pending_block_records_reconciliation_was_not_attempted(self):
         with tempfile.TemporaryDirectory() as tmp:
