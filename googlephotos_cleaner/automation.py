@@ -512,6 +512,23 @@ class Cleaner:
                                 wait_for_timeline()
                             target_absent = not self.browser.target_exists(day)
                         if self.pending and target_absent:
+                            feedback_source = getattr(self.browser, "last_feedback_source", None)
+                            if feedback_source != "browser_positive_feedback":
+                                error = DestructiveActionAmbiguous(
+                                    "Trash reconciliation has no positive feedback source; refusing completion claim"
+                                )
+                                self._event(
+                                    "destructive_action_ambiguous",
+                                    "ERROR",
+                                    day=day,
+                                    error_type=type(error).__name__,
+                                    error_message=str(error),
+                                )
+                                if self.checkpoint:
+                                    self.checkpoint.save(batch=processed, photos=total_photos, state="ambiguous")
+                                self.stop_requested = True
+                                self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
+                                raise error
                             self.pending.clear()
                             self._event(
                                 "day_trash_completed",
@@ -519,6 +536,7 @@ class Cleaner:
                                 reconciled=True,
                                 positive_feedback=True,
                                 result="confirmed",
+                                feedback_source=feedback_source,
                                 reconciliation="feedback_confirmed",
                             )
                             self.logger.info("Moved day %s to Trash", day)
@@ -545,6 +563,8 @@ class Cleaner:
                         continue
                     if self.pending:
                         self.pending.clear()
+                except DestructiveActionAmbiguous:
+                    raise
                 except Exception as exc:
                     # A click may already have reached Google Photos. Keep its
                     # journal entry and stop this run without a second click.

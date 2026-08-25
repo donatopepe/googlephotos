@@ -315,6 +315,47 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(started["pending_policy"], "block")
         self.assertEqual(started["pending_timeout_ms"], 30000)
 
+    def test_reconciled_day_completion_propagates_positive_feedback_source(self):
+        class ReconcileBrowser(FakeBrowser):
+            last_feedback_source = "browser_positive_feedback"
+            def delete_selected_day(self):
+                self.trashed.append(["day"])
+                return False
+            def wait_for_target_absence(self, _label, timeout_ms):
+                return True
+
+        browser = ReconcileBrowser([("2 Aug", 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="reconcile-source-positive")
+            Cleaner(browser, day_mode=True, diagnostic=diagnostic, pending=pending, max_batches=1).run()
+            import json
+            events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+
+        completed = next(event for event in events if event["phase"] == "day_trash_completed")
+        self.assertEqual(completed["feedback_source"], "browser_positive_feedback")
+
+    def test_reconciled_day_completion_requires_positive_feedback_source(self):
+        class ReconcileBrowser(FakeBrowser):
+            last_feedback_source = None
+            def delete_selected_day(self):
+                self.trashed.append(["day"])
+                return False
+            def wait_for_target_absence(self, _label, timeout_ms):
+                return True
+
+        browser = ReconcileBrowser([("2 Aug", 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="reconcile-source")
+            with self.assertRaises(DestructiveActionAmbiguous):
+                Cleaner(browser, day_mode=True, diagnostic=diagnostic, pending=pending, checkpoint=checkpoint, max_batches=1).run()
+
+            self.assertIsNotNone(pending.load())
+            import json
+            self.assertEqual(json.loads(checkpoint.path.read_text())["state"], "ambiguous")
+
     def test_bounded_dry_run_day_pass_requests_stop(self):
         browser = FakeBrowser([("2 Aug", 1), ("1 Aug", 1)])
 
