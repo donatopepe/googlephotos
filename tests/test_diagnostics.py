@@ -118,13 +118,24 @@ class DiagnosticsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "checkpoint.json"
             store = CheckpointStore(path)
-            store.save(batch=3, photos=120, state="completed", password="never-save")
+            store.save(
+                batch=3,
+                photos=120,
+                state="completed",
+                reason="bounded pass complete",
+                run_id="run-123",
+                pid=4321,
+                password="never-save",
+            )
 
             saved = json.loads(path.read_text())
 
             self.assertEqual(saved["batch"], 3)
             self.assertEqual(saved["photos"], 120)
             self.assertEqual(saved["state"], "completed")
+            self.assertEqual(saved["reason"], "bounded pass complete")
+            self.assertEqual(saved["run_id"], "run-123")
+            self.assertEqual(saved["pid"], 4321)
             self.assertNotIn("password", saved)
             self.assertFalse(path.with_suffix(".tmp").exists())
 
