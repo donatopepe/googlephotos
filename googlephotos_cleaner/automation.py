@@ -551,6 +551,7 @@ class Cleaner:
                     day=day,
                     positive_feedback=True,
                     result="confirmed",
+                    feedback_source=getattr(self.browser, "last_feedback_source", None),
                 )
                 self.logger.info("Moved day %s to Trash", day)
                 reset_top = getattr(self.browser, "reset_timeline_to_top", None)
