@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Sequence
@@ -567,7 +568,7 @@ class PlaywrightBrowser:
         return self.page.get_by_role("checkbox", name=label, exact=True).count() > 0
 
     def _trash_feedback_visible(self) -> bool:
-        """Require positive Google Photos completion feedback, not DOM absence alone."""
+        """Require visible quantity-bearing Google Photos completion toast."""
         self.last_feedback_source = None
         feedback = (
             "Moved to trash",
@@ -575,6 +576,11 @@ class PlaywrightBrowser:
             "Spostato nel cestino",
             "Spostata nel cestino",
             "Moved to bin",
+            "Spostate 8 foto nel Cestino",
+            "Moved 8 photos to Trash",
+        )
+        popup_patterns = (
+            re.compile(r"(?i)\b(?:moved|spostat[oaie])\s+(\d+)\s+(?:photos?|foto)\b.*\b(?:trash|bin|cestin[oi])\b"),
         )
         for text in feedback:
             count = 0
@@ -632,6 +638,24 @@ class PlaywrightBrowser:
                             positive_feedback=False,
                         )
                     return False
+            popup_count = None
+            if visible_target is not None:
+                for pattern in popup_patterns:
+                    match = pattern.search(text)
+                    if match:
+                        popup_count = int(match.group(1))
+                        break
+            if visible_target is not None and popup_count is not None:
+                self.last_feedback_source = "browser_positive_feedback"
+                if getattr(self, "diagnostic", None) is not None:
+                    self.diagnostic.event(
+                        "trash_feedback_popup",
+                        popup_kind="bottom_left_toast",
+                        moved_count=popup_count,
+                        positive_feedback=True,
+                        feedback_source=self.last_feedback_source,
+                    )
+                return True
             candidate_source = "browser_positive_feedback" if visible_count else ("dom_candidate_not_visible" if count else None)
             if getattr(self, "diagnostic", None) is not None:
                 self.diagnostic.event(
