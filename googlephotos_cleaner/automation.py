@@ -166,6 +166,9 @@ class Cleaner:
                 outcome=self.last_outcome.value,
                 stop_requested=True,
                 already_terminal=True,
+                result="already_terminal",
+                positive_feedback=False,
+                feedback_source=None,
             )
             return 0
         self.stop_requested = False

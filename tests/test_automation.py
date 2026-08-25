@@ -77,6 +77,21 @@ class AmbiguousBrowser(FakeBrowser):
 
 
 class BrowserAdapterTests(unittest.TestCase):
+    def test_cleaner_reentry_terminal_event_has_non_proof_fields(self):
+        cleaner = Cleaner(FakeBrowser([]), dry_run=True)
+        cleaner.last_outcome = PassOutcome.PASS_DONE
+
+        with tempfile.TemporaryDirectory() as tmp:
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="reentry-evidence")
+            cleaner.diagnostic = diagnostic
+            cleaner.run()
+
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            terminal = next(event for event in events if event["phase"] == "cleaner_terminal_state")
+            self.assertFalse(terminal["positive_feedback"])
+            self.assertIsNone(terminal["feedback_source"])
+            self.assertEqual(terminal["result"], "already_terminal")
+
     def test_fake_adapter_exposes_authentication_and_batch_operations(self):
         browser = FakeBrowser([["old-1", "old-2"]])
 
