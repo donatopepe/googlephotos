@@ -473,6 +473,9 @@ class Cleaner:
                         error_type=type(exc).__name__,
                         count=len(media_ids),
                         error_message=str(exc),
+                        result="ambiguous",
+                        positive_feedback=False,
+                        feedback_source=None,
                     )
                     self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="trash_result_unknown")
                     self.stop_requested = True
@@ -491,6 +494,9 @@ class Cleaner:
                         error_type=type(error).__name__,
                         count=len(media_ids),
                         error_message=str(error),
+                        result="ambiguous",
+                        positive_feedback=False,
+                        feedback_source=None,
                     )
                     self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="missing_positive_feedback")
                     self.stop_requested = True
@@ -622,7 +628,14 @@ class Cleaner:
                         self.pending.save(label=day, kind=target_kind, scroll_top=0)
                     completed = self.browser.delete_selected_day()
                     if completed is False:
-                        self._event("day_trash_pending", "WARNING", day=day)
+                        self._event(
+                            "day_trash_pending",
+                            "WARNING",
+                            day=day,
+                            result="pending_reconciliation",
+                            positive_feedback=False,
+                            feedback_source=None,
+                        )
                         # The action was clicked once and journaled. Reconcile it
                         # before any further selection or destructive action.
                         wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
@@ -645,6 +658,9 @@ class Cleaner:
                                     day=day,
                                     error_type=type(error).__name__,
                                     error_message=str(error),
+                                    result="ambiguous",
+                                    positive_feedback=False,
+                                    feedback_source=None,
                                 )
                                 self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="missing_reconciliation_feedback")
                                 self.stop_requested = True
@@ -670,7 +686,14 @@ class Cleaner:
                             self._event("day_checkpoint_saved", day=day, days=processed)
                         else:
                             self._checkpoint(batch=processed, photos=total_photos, state="pending", reason="reconciliation_unresolved")
-                            self._event("day_trash_unresolved", "WARNING", day=day)
+                            self._event(
+                                "day_trash_unresolved",
+                                "WARNING",
+                                day=day,
+                                result="pending_unresolved",
+                                positive_feedback=False,
+                                feedback_source=None,
+                            )
                             self.stop_requested = True
                             self.last_outcome = PassOutcome.PENDING_UNRESOLVED
                             self._event("cleaner_terminal_state", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
@@ -688,6 +711,9 @@ class Cleaner:
                         "WARNING",
                         day=day,
                         error_type=type(exc).__name__,
+                        result="pending_reconciliation",
+                        positive_feedback=False,
+                        feedback_source=None,
                     )
                     self._checkpoint(batch=processed, photos=total_photos, state="pending", reason="trash_result_pending")
                     self.logger.warning(
@@ -708,6 +734,9 @@ class Cleaner:
                         day=day,
                         error_type=type(error).__name__,
                         error_message=str(error),
+                        result="ambiguous",
+                        positive_feedback=False,
+                        feedback_source=None,
                     )
                     self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="missing_positive_feedback")
                     if self.pending is not None and self.pending.load() is None:
