@@ -58,6 +58,7 @@ def run(argv=None) -> int:
     processed = None
     run_outcome = None
     browser_cleanup = "not_started"
+    cleaner_stop_requested = False
     try:
         browser = PlaywrightBrowser(
             args.profile_dir,
@@ -117,6 +118,7 @@ def run(argv=None) -> int:
         # recovery and terminal stop; never re-enter pass loop.
         processed = cleaner.run()
         run_outcome = cleaner.last_outcome.value
+        cleaner_stop_requested = bool(getattr(cleaner, "stop_requested", False))
         return 0
     except KeyboardInterrupt:
         run_outcome = "interrupted"
@@ -182,7 +184,7 @@ def run(argv=None) -> int:
         emit_terminal_summary(
             diagnostic,
             outcome=run_outcome,
-            stop_requested=run_outcome in {"failed", "interrupted", "failed_close"},
+            stop_requested=cleaner_stop_requested or run_outcome in {"failed", "interrupted", "failed_close"},
             processed=processed,
             pending=pending,
             checkpoint=checkpoint,
@@ -193,6 +195,7 @@ def run(argv=None) -> int:
             "run_finished",
             **process_context(),
             outcome=run_outcome,
+            stop_requested=cleaner_stop_requested or run_outcome in {"failed", "interrupted", "failed_close"},
             processed=processed,
             browser_open=browser is not None and keep_browser_open,
             pending_path=str(pending.path),

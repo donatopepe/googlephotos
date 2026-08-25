@@ -47,6 +47,8 @@ class MainFlowTests(unittest.TestCase):
         self.assertFalse(finished["positive_feedback"])
         self.assertIsNone(finished["feedback_source"])
         self.assertEqual(finished["result"], "run_finished")
+        self.assertTrue(stopped["stop_requested"])
+        self.assertTrue(finished["stop_requested"])
         for event in (stopped, finished):
             self.assertIn("pid", event)
             self.assertIn("pending_path", event)

@@ -500,6 +500,19 @@ class BrowserAdapterTests(unittest.TestCase):
             import json
             self.assertEqual(json.loads(checkpoint.path.read_text())["state"], "ambiguous")
 
+    def test_bounded_dry_run_checkpoint_is_terminal_and_contextual(self):
+        browser = FakeBrowser([("2 Aug", 1)])
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="checkpoint-bounded")
+            cleaner = Cleaner(browser, dry_run=True, day_mode=True, max_batches=1, checkpoint=checkpoint, diagnostic=diagnostic)
+            self.assertEqual(cleaner.run(), 1)
+            saved = __import__("json").loads(checkpoint.path.read_text())
+            self.assertEqual(saved["state"], "bounded_stop")
+            self.assertEqual(saved["reason"], "max_batches")
+            self.assertEqual(saved["run_id"], "checkpoint-bounded")
+            self.assertEqual(saved["pid"], __import__("os").getpid())
+
     def test_bounded_dry_run_day_pass_requests_stop(self):
         browser = FakeBrowser([("2 Aug", 1), ("1 Aug", 1)])
 

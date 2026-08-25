@@ -86,6 +86,18 @@ class Cleaner:
         self.pending_timeout_ms = pending_timeout_ms
         self.last_outcome = PassOutcome.CONTINUE
 
+    def _checkpoint(self, *, batch: int, photos: int, state: str, reason: str) -> None:
+        if self.checkpoint is None:
+            return
+        self.checkpoint.save(
+            batch=batch,
+            photos=photos,
+            state=state,
+            reason=reason,
+            run_id=getattr(self.diagnostic, "run_id", None),
+            **process_context(),
+        )
+
     def _runtime_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {
             **process_context(),
@@ -406,8 +418,7 @@ class Cleaner:
                 self.last_outcome = PassOutcome.PASS_DONE
                 self.stop_requested = True
                 self._event("finished", photos=total_photos, batches=processed, outcome=self.last_outcome.value)
-                if self.checkpoint:
-                    self.checkpoint.save(batch=processed, photos=total_photos, state="completed")
+                self._checkpoint(batch=processed, photos=total_photos, state="completed", reason="no_photos")
                 self.logger.info("No photos found; finished")
                 return processed
 
@@ -434,10 +445,7 @@ class Cleaner:
                         count=len(media_ids),
                         error_message=str(exc),
                     )
-                    if self.checkpoint:
-                        self.checkpoint.save(
-                            batch=processed, photos=total_photos, state="ambiguous"
-                        )
+                    self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="trash_result_unknown")
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                     raise DestructiveActionAmbiguous(
@@ -455,8 +463,7 @@ class Cleaner:
                         count=len(media_ids),
                         error_message=str(error),
                     )
-                    if self.checkpoint:
-                        self.checkpoint.save(batch=processed, photos=total_photos, state="ambiguous")
+                    self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="missing_positive_feedback")
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                     self._event(
@@ -482,18 +489,17 @@ class Cleaner:
 
             processed += 1
             total_photos += len(media_ids)
-            if self.checkpoint:
-                self.checkpoint.save(
-                    batch=processed, photos=total_photos, state="running"
-                )
+            self._checkpoint(batch=processed, photos=total_photos, state="running", reason="batch_processed")
             self._event("checkpoint_saved", batch=processed, photos=total_photos)
             if self.max_batches is not None and processed >= self.max_batches:
                 self.stop_requested = True
                 self.last_outcome = PassOutcome.PASS_DONE
+                self._checkpoint(batch=processed, photos=total_photos, state="bounded_stop", reason="max_batches")
                 self._event("batch_limit", batches=processed, photos=total_photos)
                 return processed
 
         self.last_outcome = PassOutcome.PASS_DONE
+        self._checkpoint(batch=processed, photos=total_photos, state="bounded_stop", reason="max_batches")
         self._event("batch_limit", batches=processed, photos=total_photos)
         self.logger.info("Reached batch limit: %d", processed)
         return processed
@@ -545,8 +551,7 @@ class Cleaner:
                         "ERROR",
                         failures=scan_failures,
                     )
-                    if self.checkpoint:
-                        self.checkpoint.save(batch=processed, photos=total_photos, state="scan_failed")
+                    self._checkpoint(batch=processed, photos=total_photos, state="scan_failed", reason="max_day_scan_failures")
                     return processed
                 idle_scrolls += 1
                 self._event("timeline_idle", idle_scrolls=idle_scrolls)
@@ -567,8 +572,7 @@ class Cleaner:
                     continue
                 self._event("timeline_paused", "WARNING", idle_scrolls=idle_scrolls)
                 self.last_outcome = PassOutcome.STOP_SAFE
-                if self.checkpoint:
-                    self.checkpoint.save(batch=processed, photos=total_photos, state="idle")
+                self._checkpoint(batch=processed, photos=total_photos, state="idle", reason="timeline_idle")
                 return processed
             idle_scrolls = 0
             scan_failures = 0
@@ -613,8 +617,7 @@ class Cleaner:
                                     error_type=type(error).__name__,
                                     error_message=str(error),
                                 )
-                                if self.checkpoint:
-                                    self.checkpoint.save(batch=processed, photos=total_photos, state="ambiguous")
+                                self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="missing_reconciliation_feedback")
                                 self.stop_requested = True
                                 self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                                 raise error
@@ -634,16 +637,10 @@ class Cleaner:
                                 reset_top()
                             processed += 1
                             total_photos += 1
-                            if self.checkpoint:
-                                self.checkpoint.save(
-                                    batch=processed, photos=total_photos, state="running"
-                                )
+                            self._checkpoint(batch=processed, photos=total_photos, state="running", reason="day_processed")
                             self._event("day_checkpoint_saved", day=day, days=processed)
                         else:
-                            if self.checkpoint:
-                                self.checkpoint.save(
-                                    batch=processed, photos=total_photos, state="pending"
-                                )
+                            self._checkpoint(batch=processed, photos=total_photos, state="pending", reason="reconciliation_unresolved")
                             self._event("day_trash_unresolved", "WARNING", day=day)
                             self.stop_requested = True
                             self.last_outcome = PassOutcome.PENDING_UNRESOLVED
@@ -663,8 +660,7 @@ class Cleaner:
                         day=day,
                         error_type=type(exc).__name__,
                     )
-                    if self.checkpoint:
-                        self.checkpoint.save(batch=processed, photos=total_photos, state="pending")
+                    self._checkpoint(batch=processed, photos=total_photos, state="pending", reason="trash_result_pending")
                     self.logger.warning(
                         "Trash result pending for %s; will reconcile before another click", day
                     )
@@ -684,8 +680,7 @@ class Cleaner:
                         error_type=type(error).__name__,
                         error_message=str(error),
                     )
-                    if self.checkpoint:
-                        self.checkpoint.save(batch=processed, photos=total_photos, state="ambiguous")
+                    self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="missing_positive_feedback")
                     if self.pending is not None and self.pending.load() is None:
                         self.pending.save(label=day, kind="day", scroll_top=0)
                     self.stop_requested = True
@@ -704,13 +699,14 @@ class Cleaner:
                     reset_top()
             processed += 1
             total_photos += 1
-            if self.checkpoint:
-                self.checkpoint.save(batch=processed, photos=total_photos, state="running")
+            self._checkpoint(batch=processed, photos=total_photos, state="running", reason="day_processed")
             self._event("day_checkpoint_saved", day=day, days=processed)
             if self.max_batches is not None and processed >= self.max_batches:
                 self.stop_requested = True
                 self.last_outcome = PassOutcome.PASS_DONE
+                self._checkpoint(batch=processed, photos=total_photos, state="bounded_stop", reason="max_batches")
                 self._event("batch_limit", batches=processed, photos=total_photos)
                 return processed
         self.last_outcome = PassOutcome.PASS_DONE
+        self._checkpoint(batch=processed, photos=total_photos, state="completed", reason="no_more_days")
         return processed
