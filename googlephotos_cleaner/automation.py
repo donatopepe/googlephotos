@@ -19,6 +19,7 @@ class DestructiveActionAmbiguous(CleanerError):
 class PassOutcome(str, Enum):
     CONTINUE = "continue"
     PASS_DONE = "pass_done"
+    BOUNDED_STOP = "bounded_stop"
     STOP_SAFE = "stop_safe"
     PENDING_UNRESOLVED = "pending_unresolved"
     DESTRUCTIVE_AMBIGUOUS = "destructive_ambiguous"
@@ -27,7 +28,19 @@ class PassOutcome(str, Enum):
 class BrowserAdapter(Protocol):
     def wait_until_authenticated(self) -> None: ...
 
-    def select_visible_batch(self, batch_size: int) -> Sequence[str]: ...
+    def select_current_day(
+        self,
+        *,
+        batch_size: int | None = None,
+        excluded_media_ids: Sequence[str] = (),
+    ) -> str | None: ...
+
+    def select_visible_batch(
+        self,
+        batch_size: int,
+        *,
+        excluded_media_ids: Sequence[str] = (),
+    ) -> Sequence[str]: ...
 
     def move_selected_to_trash(self, media_ids: Sequence[str]) -> None: ...
 
@@ -41,6 +54,8 @@ class Cleaner:
         max_batches: int | None = None,
         max_retries: int = 2,
         dry_run: bool = False,
+        execute: bool = False,
+        confirm_all_media_to_trash: bool = False,
         logger: logging.Logger | None = None,
         diagnostic: DiagnosticLog | None = None,
         checkpoint: CheckpointStore | None = None,
@@ -67,11 +82,25 @@ class Cleaner:
             raise ValueError("pending_policy must be block, inspect, or discard")
         if pending_timeout_ms <= 0:
             raise ValueError("pending_timeout_ms must be greater than zero")
+        if not isinstance(execute, bool) or not isinstance(confirm_all_media_to_trash, bool):
+            raise ValueError("execute and confirm_all_media_to_trash must be booleans")
+        if execute != confirm_all_media_to_trash:
+            raise CleanerError(
+                "destructive actions require both execute and confirm_all_media_to_trash"
+            )
+        if dry_run and (execute or confirm_all_media_to_trash):
+            raise CleanerError("dry_run cannot be combined with destructive authorization")
+        if execute and pending is None:
+            raise CleanerError(
+                "destructive actions require a durable pending store"
+            )
         self.browser = browser
         self.batch_size = batch_size
         self.max_batches = max_batches
         self.max_retries = max_retries
         self.dry_run = dry_run
+        self.execute = execute
+        self.confirm_all_media_to_trash = confirm_all_media_to_trash
         self.logger = logger or logging.getLogger(__name__)
         self.diagnostic = diagnostic
         self.checkpoint = checkpoint
@@ -86,6 +115,35 @@ class Cleaner:
         self.pending_timeout_ms = pending_timeout_ms
         self.reconcile_pending_only = False
         self.last_outcome = PassOutcome.CONTINUE
+        self._day_scan_recovery_rounds = 0
+        self._skipped_ambiguous_targets: set[str] = set()
+        self._skipped_ambiguous_media_ids: set[str] = set()
+
+    def _browser_batch_ids(self, media_ids: Sequence[str]) -> list[str]:
+        """Return stable IDs for a selected batch when the adapter exposes them."""
+        exposed = getattr(self.browser, "last_batch_ids", None)
+        if exposed is None:
+            return list(media_ids)
+        return list(exposed)
+
+    def _batch_is_skipped(self, media_ids: Sequence[str]) -> bool:
+        stable_ids = set(self._browser_batch_ids(media_ids))
+        return bool(stable_ids) and bool(stable_ids & self._skipped_ambiguous_media_ids)
+
+    def _select_media_batch(self) -> list[str]:
+        """Select one bounded batch while excluding previously ambiguous media."""
+        excluded = self._skipped_ambiguous_media_ids
+        try:
+            return list(
+                self.browser.select_visible_batch(
+                    self.batch_size,
+                    excluded_media_ids=excluded,
+                )
+            )
+        except TypeError as exc:
+            if "excluded_media_ids" not in str(exc):
+                raise
+            return list(self.browser.select_visible_batch(self.batch_size))
 
     def _checkpoint(self, *, batch: int, photos: int, state: str, reason: str) -> None:
         if self.checkpoint is None:
@@ -102,7 +160,9 @@ class Cleaner:
     def _runtime_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {
             **process_context(),
-            "mode": "dry-run" if self.dry_run else "delete",
+            "mode": "delete" if self.execute else "dry-run",
+            "execute": self.execute,
+            "confirm_all_media_to_trash": self.confirm_all_media_to_trash,
             "pending_policy": self.pending_policy,
             "pending_timeout_ms": self.pending_timeout_ms,
             "max_batches": self.max_batches,
@@ -193,41 +253,135 @@ class Cleaner:
             checkpoint = self.checkpoint.load(
                 current_run_id=getattr(self.diagnostic, "run_id", None),
             )
+            if checkpoint and checkpoint.get("state") in {"pending", "ambiguous"}:
+                checkpoint_is_pending = checkpoint.get("state") == "pending"
+                if self.pending_policy == "discard":
+                    self.checkpoint.path.unlink(missing_ok=True)
+                    self._event(
+                        "checkpoint_discarded_manual",
+                        "WARNING",
+                        state=checkpoint.get("state"),
+                        reason=checkpoint.get("reason"),
+                        policy=self.pending_policy,
+                        result="discarded_without_reconciliation",
+                        positive_feedback=False,
+                        feedback_source=None,
+                    )
+                elif checkpoint_is_pending and self.pending_policy == "inspect":
+                    self._event(
+                        "checkpoint_pending_discarded_after_timeout",
+                        "WARNING",
+                        state=checkpoint.get("state"),
+                        reason=checkpoint.get("reason"),
+                        policy=self.pending_policy,
+                        result="discarded_without_reconciliation",
+                        positive_feedback=False,
+                        feedback_source=None,
+                    )
+                    self.checkpoint.path.unlink(missing_ok=True)
+                else:
+                    self.stop_requested = True
+                    self.last_outcome = (
+                        PassOutcome.DESTRUCTIVE_AMBIGUOUS
+                        if checkpoint.get("state") == "ambiguous"
+                        else PassOutcome.PENDING_UNRESOLVED
+                    )
+                    self._event(
+                        "checkpoint_unresolved",
+                        "WARNING",
+                        state=checkpoint.get("state"),
+                        reason=checkpoint.get("reason"),
+                        resumable=False,
+                    )
+                    self._event(
+                        "cleaner_terminal_state",
+                        "WARNING",
+                        outcome=self.last_outcome.value,
+                        stop_requested=True,
+                        checkpoint_state=checkpoint.get("state"),
+                        result="unresolved_checkpoint",
+                        positive_feedback=False,
+                        feedback_source=None,
+                    )
+                    return 0
             if checkpoint and checkpoint.get("state") == "stale":
-                self.stop_requested = True
-                self.last_outcome = PassOutcome.STOP_SAFE
-                self._event(
-                    "checkpoint_stale",
-                    "WARNING",
-                    state=checkpoint.get("state"),
-                    reason=checkpoint.get("reason"),
-                    resumable=False,
-                )
-                self._event(
-                    "cleaner_terminal_state",
-                    "WARNING",
-                    outcome=self.last_outcome.value,
-                    stop_requested=True,
-                    checkpoint_state="stale",
-                    result="stale_checkpoint",
-                    positive_feedback=False,
-                    feedback_source=None,
-                )
-                return 0
+                # A running checkpoint from a dead process has no pending Trash
+                # action: its last durable reason is safe to discard manually.
+                # Never resume its cursor, since it may point at stale DOM.
+                if self.pending_policy == "discard":
+                    self.checkpoint.path.unlink(missing_ok=True)
+                    self._event(
+                        "checkpoint_discarded_manual",
+                        "WARNING",
+                        state=checkpoint.get("state"),
+                        reason=checkpoint.get("reason"),
+                        policy=self.pending_policy,
+                        result="discarded_without_reconciliation",
+                        positive_feedback=False,
+                        feedback_source=None,
+                    )
+                    # An explicitly discarded stale checkpoint is not a
+                    # resumable cursor. Continue with a fresh bounded scan.
+                    checkpoint = None
+                else:
+                    self.stop_requested = True
+                    self.last_outcome = PassOutcome.STOP_SAFE
+                    self._event(
+                        "checkpoint_stale",
+                        "WARNING",
+                        state=checkpoint.get("state"),
+                        reason=checkpoint.get("reason"),
+                        resumable=False,
+                    )
+                    self._event(
+                        "cleaner_terminal_state",
+                        "WARNING",
+                        outcome=self.last_outcome.value,
+                        stop_requested=True,
+                        checkpoint_state="stale",
+                        result="stale_checkpoint",
+                        positive_feedback=False,
+                        feedback_source=None,
+                    )
+                    return 0
         self._event("run_started", **self._runtime_context())
         self.browser.wait_until_authenticated()
         self._event("authenticated")
         if self.pending:
+            pending_file_exists = self.pending.path.exists()
             previous = self.pending.load()
             self._event(
                 "pending_loaded",
                 pending_exists=previous is not None,
+                pending_file_exists=pending_file_exists,
                 pending_kind=previous.get("kind") if previous else None,
                 pending_count=previous.get("count") if previous else None,
                 result="observed",
                 positive_feedback=False,
                 feedback_source=None,
             )
+            if pending_file_exists and previous is None:
+                self._event(
+                    "pending_unresolved",
+                    "WARNING",
+                    policy=self.pending_policy,
+                    result="invalid_pending_store",
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
+                self.stop_requested = True
+                self.last_outcome = PassOutcome.PENDING_UNRESOLVED
+                self._event(
+                    "cleaner_terminal_state",
+                    "WARNING",
+                    outcome=self.last_outcome.value,
+                    stop_requested=True,
+                    pending_exists=True,
+                    result="invalid_pending_store",
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
+                return 0
             if previous and self.dry_run and self.pending_policy != "discard":
                 self._event(
                     "pending_unresolved",
@@ -264,6 +418,29 @@ class Cleaner:
                 self._event(
                     "cleaner_terminal_state",
                     "INFO",
+                    outcome=self.last_outcome.value,
+                    stop_requested=True,
+                    pending_exists=False,
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
+                return 0
+            if previous and self.reconcile_pending_only and self.pending_policy == "discard":
+                self.pending.clear()
+                self.last_outcome = PassOutcome.PASS_DONE
+                self.stop_requested = True
+                self._event(
+                    "pending_discarded_manual",
+                    "WARNING",
+                    target=previous.get("label"),
+                    policy=self.pending_policy,
+                    positive_feedback=False,
+                    feedback_source=None,
+                    result="discarded_without_reconciliation",
+                )
+                self._event(
+                    "cleaner_terminal_state",
+                    "WARNING",
                     outcome=self.last_outcome.value,
                     stop_requested=True,
                     pending_exists=False,
@@ -322,7 +499,7 @@ class Cleaner:
                     result="discarded_without_reconciliation",
                 )
                 previous = None
-            if previous and self.pending_policy in {"block", "inspect"}:
+            if previous and self.pending_policy == "block":
                 self._event(
                     "pending_reconciliation_skipped",
                     "WARNING",
@@ -333,7 +510,7 @@ class Cleaner:
                     feedback_source=None,
                 )
                 self._event(
-                    "pending_inspected" if self.pending_policy == "inspect" else "pending_unresolved",
+                    "pending_unresolved",
                     "WARNING",
                     target=previous.get("label"),
                     policy=self.pending_policy,
@@ -353,6 +530,54 @@ class Cleaner:
                     feedback_source=None,
                 )
                 return 0
+            if previous and self.pending_policy == "inspect":
+                self._event(
+                    "pending_inspected",
+                    "WARNING",
+                    target=previous.get("label"),
+                    policy=self.pending_policy,
+                    result="reconciliation_attempted",
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
+                wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
+                target_label = previous["label"]
+                reconciled = (
+                    wait_for_absence(target_label, timeout_ms=self.pending_timeout_ms)
+                    if wait_for_absence is not None
+                    else False
+                )
+                feedback_source = getattr(self.browser, "last_feedback_source", None)
+                if reconciled and feedback_source == "browser_positive_feedback":
+                    self.pending.clear()
+                    previous = None
+                    self._event(
+                        "pending_reconciled",
+                        target=target_label,
+                        result="reconciled",
+                        positive_feedback=True,
+                        feedback_source=feedback_source,
+                    )
+                else:
+                    # ``inspect`` is an explicit recovery policy: after the
+                    # bounded reconciliation timeout, discard only the local
+                    # journal and continue scanning. This never retries the
+                    # original Trash click; the uncertain browser action stays
+                    # represented by the diagnostic event. Keep a local
+                    # tombstone so the same target cannot become eligible for
+                    # another destructive click during this run.
+                    self.pending.clear()
+                    self._skipped_ambiguous_targets.add(target_label)
+                    self._event(
+                        "pending_discarded_after_timeout",
+                        "WARNING",
+                        target=target_label,
+                        policy=self.pending_policy,
+                        result="discarded_without_reconciliation",
+                        positive_feedback=False,
+                        feedback_source=None,
+                    )
+                    previous = None
             if previous and previous.get("kind") == "media_batch":
                 if self.discard_ambiguous_media_batches or self.pending_policy == "discard":
                     self.pending.clear()
@@ -474,21 +699,37 @@ class Cleaner:
                             positive_feedback=False,
                             feedback_source=None,
                         )
-                        self.stop_requested = True
-                        self.last_outcome = PassOutcome.PENDING_UNRESOLVED
-                        self._event("cleaner_terminal_state", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
-                        return 0
+                        if self.pending_policy == "inspect":
+                            self.pending.clear()
+                            self._skipped_ambiguous_targets.add(previous["label"])
+                            self._event(
+                                "pending_discarded_after_timeout",
+                                "WARNING",
+                                target=previous["label"],
+                                policy=self.pending_policy,
+                                result="discarded_without_reconciliation",
+                                positive_feedback=False,
+                                feedback_source=None,
+                            )
+                        else:
+                            self.stop_requested = True
+                            self.last_outcome = PassOutcome.PENDING_UNRESOLVED
+                            self._event("cleaner_terminal_state", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
+                            return 0
         processed = 0
         total_photos = 0
 
         while self.max_batches is None or processed < self.max_batches:
             if self.day_mode:
-                return self._run_days(processed, total_photos)
+                processed = self._run_days(processed, total_photos)
+                if self.stop_requested or self.last_outcome is not PassOutcome.CONTINUE:
+                    return processed
+                continue
 
             media_ids: list[str] | None = None
             for attempt in range(self.max_retries + 1):
                 try:
-                    media_ids = list(self.browser.select_visible_batch(self.batch_size))
+                    media_ids = self._select_media_batch()
                     self._event("scan", attempt=attempt, found=len(media_ids))
                     break
                 except Exception as exc:
@@ -518,18 +759,31 @@ class Cleaner:
                 self.logger.info("No photos found; finished")
                 return processed
 
-            if self.dry_run:
+            if self.dry_run or not self.execute:
                 self._event("selection", count=len(media_ids), dry_run=True)
                 self.logger.info("Dry-run: found %d visible photos", len(media_ids))
             else:
                 self._event("trash_started", count=len(media_ids))
+                stable_batch_ids = self._browser_batch_ids(media_ids)
+                if self._batch_is_skipped(media_ids):
+                    self._event(
+                        "ambiguous_target_skipped",
+                        "WARNING",
+                        target=f"batch:{processed + 1}",
+                        target_kind="media_batch",
+                        media_ids=stable_batch_ids,
+                        result="not_selected_again",
+                        positive_feedback=False,
+                        feedback_source=None,
+                    )
+                    continue
                 if self.pending:
                     self.pending.save(
                         label=f"batch:{processed + 1}",
                         kind="media_batch",
                         scroll_top=0,
                         count=len(media_ids),
-                        media_ids=list(media_ids),
+                        media_ids=stable_batch_ids,
                     )
                 try:
                     self.browser.move_selected_to_trash(media_ids)
@@ -544,7 +798,44 @@ class Cleaner:
                         positive_feedback=False,
                         feedback_source=None,
                     )
-                    self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="trash_result_unknown")
+                    self._checkpoint(
+                        batch=processed,
+                        photos=total_photos,
+                        state="pending" if self.pending_policy == "inspect" else "ambiguous",
+                        reason="trash_result_unknown",
+                    )
+                    if self.pending_policy == "inspect" and self.pending is not None:
+                        self._skipped_ambiguous_targets.add(f"batch:{processed + 1}")
+                        self._skipped_ambiguous_media_ids.update(stable_batch_ids)
+                        wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
+                        reconciled = (
+                            wait_for_absence(f"batch:{processed + 1}", timeout_ms=self.pending_timeout_ms)
+                            if wait_for_absence is not None
+                            else False
+                        )
+                        feedback_source = getattr(self.browser, "last_feedback_source", None)
+                        if reconciled and feedback_source == "browser_positive_feedback":
+                            self.pending.clear()
+                            self._event(
+                                "pending_reconciled",
+                                target=f"batch:{processed + 1}",
+                                result="reconciled",
+                                positive_feedback=True,
+                                feedback_source=feedback_source,
+                            )
+                        else:
+                            self.pending.clear()
+                            self._skipped_ambiguous_targets.add(f"batch:{processed + 1}")
+                            self._event(
+                                "pending_discarded_after_timeout",
+                                "WARNING",
+                                target=f"batch:{processed + 1}",
+                                policy=self.pending_policy,
+                                result="discarded_without_reconciliation",
+                                positive_feedback=False,
+                                feedback_source=None,
+                            )
+                            continue
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                     raise DestructiveActionAmbiguous(
@@ -565,7 +856,44 @@ class Cleaner:
                         positive_feedback=False,
                         feedback_source=None,
                     )
-                    self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="missing_positive_feedback")
+                    self._checkpoint(
+                        batch=processed,
+                        photos=total_photos,
+                        state="pending" if self.pending_policy == "inspect" else "ambiguous",
+                        reason="missing_positive_feedback",
+                    )
+                    if self.pending_policy == "inspect" and self.pending is not None:
+                        self._skipped_ambiguous_targets.add(f"batch:{processed + 1}")
+                        self._skipped_ambiguous_media_ids.update(stable_batch_ids)
+                        wait_for_absence = getattr(self.browser, "wait_for_target_absence", None)
+                        reconciled = (
+                            wait_for_absence(f"batch:{processed + 1}", timeout_ms=self.pending_timeout_ms)
+                            if wait_for_absence is not None
+                            else False
+                        )
+                        feedback_source = getattr(self.browser, "last_feedback_source", None)
+                        self.pending.clear()
+                        if not (reconciled and feedback_source == "browser_positive_feedback"):
+                            self._skipped_ambiguous_targets.add(f"batch:{processed + 1}")
+                        if reconciled and feedback_source == "browser_positive_feedback":
+                            self._event(
+                                "pending_reconciled",
+                                target=f"batch:{processed + 1}",
+                                result="reconciled",
+                                positive_feedback=True,
+                                feedback_source=feedback_source,
+                            )
+                        else:
+                            self._event(
+                                "pending_discarded_after_timeout",
+                                "WARNING",
+                                target=f"batch:{processed + 1}",
+                                policy=self.pending_policy,
+                                result="discarded_without_reconciliation",
+                                positive_feedback=False,
+                                feedback_source=None,
+                            )
+                        continue
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                     self._event(
@@ -595,12 +923,12 @@ class Cleaner:
             self._event("checkpoint_saved", batch=processed, photos=total_photos)
             if self.max_batches is not None and processed >= self.max_batches:
                 self.stop_requested = True
-                self.last_outcome = PassOutcome.PASS_DONE
+                self.last_outcome = PassOutcome.BOUNDED_STOP
                 self._checkpoint(batch=processed, photos=total_photos, state="bounded_stop", reason="max_batches")
                 self._event("batch_limit", batches=processed, photos=total_photos)
                 return processed
 
-        self.last_outcome = PassOutcome.PASS_DONE
+        self.last_outcome = PassOutcome.BOUNDED_STOP
         self._checkpoint(batch=processed, photos=total_photos, state="bounded_stop", reason="max_batches")
         self._event("batch_limit", batches=processed, photos=total_photos)
         self.logger.info("Reached batch limit: %d", processed)
@@ -609,12 +937,28 @@ class Cleaner:
     def _run_days(self, processed: int, total_photos: int) -> int:
         idle_scrolls = 0
         scan_failures = 0
+        batch_size = max(1, self.batch_size)
         while self.max_batches is None or processed < self.max_batches:
             day = None
             scan_failed = False
             for attempt in range(self.max_retries + 1):
                 try:
-                    day = self.browser.select_current_day()
+                    try:
+                        day = self.browser.select_current_day(
+                            batch_size=batch_size,
+                            excluded_media_ids=self._skipped_ambiguous_media_ids,
+                        )
+                    except TypeError as exc:
+                        if "batch_size" not in str(exc) and "excluded_media_ids" not in str(exc):
+                            raise
+                        try:
+                            day = self.browser.select_current_day(
+                                excluded_media_ids=self._skipped_ambiguous_media_ids,
+                            )
+                        except TypeError as legacy_exc:
+                            if "excluded_media_ids" not in str(legacy_exc):
+                                raise
+                            day = self.browser.select_current_day()
                     self._event(
                         "day_scan",
                         day=day,
@@ -643,15 +987,48 @@ class Cleaner:
                         break
                     self._recover(attempt + 1, exc)
             if not day:
+                if self._skipped_ambiguous_targets and not scan_failed:
+                    self._event(
+                        "ambiguous_target_advance_requested",
+                        "WARNING",
+                        target_kind="day",
+                        result="advance_timeline",
+                        positive_feedback=False,
+                        feedback_source=None,
+                    )
+                    advance_timeline = getattr(self.browser, "advance_timeline", None)
+                    if advance_timeline is not None and advance_timeline():
+                        idle_scrolls = 0
+                        continue
                 if scan_failed:
                     scan_failures += 1
                 if scan_failed and scan_failures >= self.max_day_scan_failures:
+                    self._day_scan_recovery_rounds += 1
+                    if self._day_scan_recovery_rounds <= self.max_retries:
+                        self._event(
+                            "day_scan_recovery_round",
+                            "WARNING",
+                            round=self._day_scan_recovery_rounds,
+                            max_rounds=self.max_retries,
+                            failures=scan_failures,
+                            result="timeline_reset_and_retry",
+                        )
+                        reset_top = getattr(self.browser, "reset_timeline_to_top", None)
+                        if reset_top is not None:
+                            reset_top()
+                        recover = getattr(self.browser, "recover", None)
+                        if recover is not None:
+                            recover()
+                        scan_failures = 0
+                        idle_scrolls = 0
+                        continue
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.STOP_SAFE
                     self._event(
                         "day_scan_stopped",
                         "ERROR",
                         failures=scan_failures,
+                        recovery_rounds=self._day_scan_recovery_rounds,
                     )
                     self._checkpoint(batch=processed, photos=total_photos, state="scan_failed", reason="max_day_scan_failures")
                     return processed
@@ -678,7 +1055,47 @@ class Cleaner:
                 return processed
             idle_scrolls = 0
             scan_failures = 0
-            if self.dry_run:
+            selection_kind = getattr(self.browser, "last_selection_kind", "day")
+            target_kind = "day" if selection_kind == "day" else "media_batch"
+            stable_batch_ids = self._browser_batch_ids(()) if selection_kind == "media" else []
+            if selection_kind == "media" and set(stable_batch_ids) & self._skipped_ambiguous_media_ids:
+                self._event(
+                    "ambiguous_target_skipped",
+                    "WARNING",
+                    target=day,
+                    target_kind=target_kind,
+                    media_ids=stable_batch_ids,
+                    result="not_selected_again",
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
+                continue
+            if day in self._skipped_ambiguous_targets:
+                # A pending journal was discarded for this exact accessible
+                # target; never select or click its Trash control again. Move
+                # the timeline first so a stale virtualized node cannot cause
+                # a tight replay loop.
+                self._event(
+                    "ambiguous_target_skipped",
+                    "WARNING",
+                    target=day,
+                    target_kind=target_kind,
+                    result="not_selected_again",
+                    positive_feedback=False,
+                    feedback_source=None,
+                )
+                advance_timeline = getattr(self.browser, "advance_timeline", None)
+                if advance_timeline is not None and advance_timeline():
+                    idle_scrolls = 0
+                    continue
+                idle_scrolls += 1
+                if idle_scrolls < self.max_idle_scrolls:
+                    continue
+                self.last_outcome = PassOutcome.STOP_SAFE
+                self.stop_requested = True
+                self._checkpoint(batch=processed, photos=total_photos, state="idle", reason="ambiguous_target_stalled")
+                return processed
+            if self.dry_run or not self.execute:
                 self._event(
                     "day_selection",
                     day=day,
@@ -691,8 +1108,16 @@ class Cleaner:
                 self._event("day_trash_started", day=day)
                 try:
                     if self.pending:
-                        target_kind = "media" if getattr(self.browser, "last_selection_kind", "day") == "media" else "day"
-                        self.pending.save(label=day, kind=target_kind, scroll_top=0)
+                        if target_kind == "media_batch":
+                            self.pending.save(
+                                label=day,
+                                kind="media_batch",
+                                scroll_top=0,
+                                count=len(stable_batch_ids),
+                                media_ids=list(stable_batch_ids),
+                            )
+                        else:
+                            self.pending.save(label=day, kind=target_kind, scroll_top=0)
                     completed = self.browser.delete_selected_day()
                     if completed is False:
                         self._event(
@@ -748,11 +1173,18 @@ class Cleaner:
                             if reset_top is not None and self.reset_timeline_after_action:
                                 reset_top()
                             processed += 1
-                            total_photos += 1
+                            total_photos += len(stable_batch_ids) if target_kind == "media_batch" else 1
                             self._checkpoint(batch=processed, photos=total_photos, state="running", reason="day_processed")
                             self._event("day_checkpoint_saved", day=day, days=processed)
+                            if self.max_batches is not None and processed >= self.max_batches:
+                                self.stop_requested = True
+                                self.last_outcome = PassOutcome.BOUNDED_STOP
+                                self._checkpoint(batch=processed, photos=total_photos, state="bounded_stop", reason="max_batches")
+                                self._event("batch_limit", batches=processed, photos=total_photos)
+                                return processed
                         else:
-                            self._checkpoint(batch=processed, photos=total_photos, state="pending", reason="reconciliation_unresolved")
+                            if self.pending_policy != "inspect":
+                                self._checkpoint(batch=processed, photos=total_photos, state="pending", reason="reconciliation_unresolved")
                             self._event(
                                 "day_trash_unresolved",
                                 "WARNING",
@@ -761,6 +1193,22 @@ class Cleaner:
                                 positive_feedback=False,
                                 feedback_source=None,
                             )
+                            # Pending timeout policy applies after the bounded
+                            # reconciliation wait. Discard only local journal;
+                            # never repeat original Trash click.
+                            if self.pending_policy == "inspect" and self.pending is not None:
+                                self.pending.clear()
+                                self._skipped_ambiguous_targets.add(day)
+                                self._event(
+                                    "pending_discarded_after_timeout",
+                                    "WARNING",
+                                    target=day,
+                                    policy=self.pending_policy,
+                                    result="discarded_without_reconciliation",
+                                    positive_feedback=False,
+                                    feedback_source=None,
+                                )
+                                continue
                             self.stop_requested = True
                             self.last_outcome = PassOutcome.PENDING_UNRESOLVED
                             self._event("cleaner_terminal_state", "WARNING", outcome=self.last_outcome.value, stop_requested=True, pending_exists=True)
@@ -807,7 +1255,16 @@ class Cleaner:
                     )
                     self._checkpoint(batch=processed, photos=total_photos, state="ambiguous", reason="missing_positive_feedback")
                     if self.pending is not None and self.pending.load() is None:
-                        self.pending.save(label=day, kind="day", scroll_top=0)
+                        if target_kind == "media_batch":
+                            self.pending.save(
+                                label=day,
+                                kind="media_batch",
+                                scroll_top=0,
+                                count=len(stable_batch_ids),
+                                media_ids=list(stable_batch_ids),
+                            )
+                        else:
+                            self.pending.save(label=day, kind=target_kind, scroll_top=0)
                     self.stop_requested = True
                     self.last_outcome = PassOutcome.DESTRUCTIVE_AMBIGUOUS
                     raise error
@@ -823,12 +1280,12 @@ class Cleaner:
                 if reset_top is not None and self.reset_timeline_after_action:
                     reset_top()
             processed += 1
-            total_photos += 1
+            total_photos += len(stable_batch_ids) if target_kind == "media_batch" else 1
             self._checkpoint(batch=processed, photos=total_photos, state="running", reason="day_processed")
             self._event("day_checkpoint_saved", day=day, days=processed)
             if self.max_batches is not None and processed >= self.max_batches:
                 self.stop_requested = True
-                self.last_outcome = PassOutcome.PASS_DONE
+                self.last_outcome = PassOutcome.BOUNDED_STOP
                 self._checkpoint(batch=processed, photos=total_photos, state="bounded_stop", reason="max_batches")
                 self._event("batch_limit", batches=processed, photos=total_photos)
                 return processed

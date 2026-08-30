@@ -40,15 +40,70 @@ class _FeedbackLocator:
 
 
 class BrowserDiagnosticsTests(unittest.TestCase):
+    def test_select_visible_batch_ignores_stale_preselection_after_refresh(self):
+        browser = object.__new__(PlaywrightBrowser)
+        browser.last_batch_ids = []
+        browser._is_trash_route = Mock(return_value=False)
+        browser._wait_for_selector = Mock()
+        browser.wait_for_current_timeline = Mock()
+        browser._dom_counts = Mock(return_value={"day": 0, "media": 2})
+        browser._media_locator = Mock()
+        browser._wait_for_timeout = Mock()
+        browser._reactivate_hover_for_control = Mock()
+        browser._click_control = Mock()
+
+        class Checkbox:
+            def __init__(self, checked):
+                self.checked = checked
+
+            def count(self):
+                return 1 if self.checked else 0
+
+            def get_attribute(self, name):
+                return "true" if self.checked and name == "aria-checked" else None
+
+        class Media:
+            def __init__(self):
+                self.checked = False
+
+            def get_attribute(self, name):
+                if name == "aria-checked":
+                    return "true" if self.checked else "false"
+                if name == "data-media-key":
+                    return "media-1"
+                return None
+
+        media = Media()
+        selected = Checkbox(False)
+        media_locator = Mock()
+        media_locator.count.return_value = 1
+        media_locator.nth.return_value = media
+        browser._media_locator.return_value = media_locator
+        browser.page = Mock()
+        browser.page.locator.side_effect = lambda selector: selected if "aria-checked=\"true\"" in selector else media_locator
+        browser._click_control.side_effect = lambda _control: setattr(media, "checked", True)
+        selected.count = lambda: 1 if media.checked else 0
+
+        self.assertEqual(browser.select_visible_batch(1), ["media-1"])
+        self.assertEqual(browser.last_batch_ids, ["media-1"])
+
     def test_browser_uses_small_slow_scroll_defaults(self):
         self.assertEqual(PlaywrightBrowser.DEFAULT_SCROLL_STEP, 240)
         self.assertEqual(PlaywrightBrowser.DEFAULT_SCROLL_DELAY_MS, 1500)
+
+    def test_trash_route_is_not_eligible_for_cleaning(self):
+        from unittest.mock import Mock
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = Mock(url="https://photos.google.com/u/0/trash")
+        with self.assertRaisesRegex(CleanerError, "Trash route"):
+            browser.select_current_day()
 
     def test_google_photos_landing_page_is_not_authenticated(self):
         self.assertFalse(is_authenticated_url("https://www.google.com/photos/about/"))
         self.assertFalse(is_authenticated_url("https://accounts.google.com/signin"))
         self.assertTrue(is_authenticated_url("https://photos.google.com/"))
         self.assertTrue(is_authenticated_url("https://photos.google.com/u/0/"))
+        self.assertFalse(is_authenticated_url("https://photos.google.com/login"))
 
     def test_browser_uses_chromium_sandbox_without_automation_flag(self):
         self.assertTrue(PlaywrightBrowser.CHROMIUM_SANDBOX)
@@ -118,9 +173,175 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         page.goto.assert_not_called()
 
+    def test_refresh_after_trash_reloads_then_waits_for_auth_and_timeline(self):
+        page = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._inactivity_timeout_ms = Mock(return_value=5000)
+        browser.wait_until_authenticated = Mock()
+        browser.wait_for_current_timeline = Mock()
+
+        browser.refresh_after_trash()
+
+        page.reload.assert_called_once_with(timeout=2000, wait_until="domcontentloaded")
+        browser.wait_until_authenticated.assert_called_once_with()
+        browser.wait_for_current_timeline.assert_called_once_with()
+
+    def test_refresh_after_trash_uses_bounded_legacy_reload_fallback(self):
+        page = Mock()
+        def reload(*args, **kwargs):
+            if kwargs:
+                raise TypeError("unexpected keyword argument 'timeout'")
+        page.reload.side_effect = reload
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._inactivity_timeout_ms = Mock(return_value=5000)
+        browser.wait_until_authenticated = Mock()
+        browser.wait_for_current_timeline = Mock()
+
+        browser.refresh_after_trash()
+
+        self.assertEqual(page.reload.call_count, 2)
+        self.assertEqual(page.reload.call_args_list[1].args, ())
+        self.assertEqual(page.reload.call_args_list[1].kwargs, {})
+        browser.wait_until_authenticated.assert_called_once_with()
+        browser.wait_for_current_timeline.assert_called_once_with()
+
+    def test_refresh_after_trash_converts_reload_failure_without_retrying(self):
+        page = Mock()
+        page.reload.side_effect = RuntimeError("refresh failed")
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._inactivity_timeout_ms = Mock(return_value=5000)
+
+        with self.assertRaisesRegex(CleanerError, "refresh failed"):
+            browser.refresh_after_trash()
+
+        page.reload.assert_called_once_with(timeout=2000, wait_until="domcontentloaded")
+
     def test_day_selector_uses_semantic_controls_without_visible_pseudo_selector(self):
         self.assertNotIn(":visible", PlaywrightBrowser.DAY_SELECTORS[0])
         self.assertNotIn(":visible", PlaywrightBrowser.DAY_SELECTORS[1])
+
+    def test_constructor_accepts_bounded_pointer_options(self):
+        browser = object.__new__(PlaywrightBrowser)
+        browser._validate_pointer_options(pointer_pause_ms=17, pointer_max_steps=3)
+
+    def test_target_closed_error_detection_is_specific(self):
+        self.assertTrue(PlaywrightBrowser._is_target_closed_error(RuntimeError("target closed")))
+        self.assertFalse(PlaywrightBrowser._is_target_closed_error(RuntimeError("timeout")))
+
+    def test_target_close_rebind_does_not_retry_destructive_click(self):
+        old_page = Mock()
+        old_page.is_closed.return_value = False
+        old_page.url = "https://photos.google.com/"
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = old_page
+        browser.context = Mock()
+        browser.cdp_url = "http://127.0.0.1:9222"
+        browser.inactivity_timeout_seconds = 1
+
+        self.assertTrue(browser._rebind_cdp_page_after_target_close(RuntimeError("target closed")))
+        self.assertIs(browser.page, old_page)
+
+    def test_rebinds_cdp_page_after_target_closed_without_clicking(self):
+        old_page = Mock()
+        old_page.is_closed.return_value = True
+        replacement = Mock()
+        replacement.is_closed.return_value = False
+        replacement.url = "https://photos.google.com/"
+        context = Mock()
+        context.pages = [old_page, replacement]
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = old_page
+        browser.context = context
+        browser.cdp_url = "http://127.0.0.1:9222"
+        browser.diagnostic = None
+        browser.inactivity_timeout_seconds = 1
+
+        self.assertTrue(browser._rebind_cdp_page_after_target_close(RuntimeError("target closed")))
+        self.assertIs(browser.page, replacement)
+
+    def test_pointer_path_interpolates_each_segment_with_bounded_steps(self):
+        page = Mock()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+        browser.pointer_max_steps = 4
+        browser.pointer_pause_ms = 17
+        browser.inactivity_timeout_seconds = 1
+        browser._move_pointer_path(((0, 0), (30, 10)))
+        moves = [call.args for call in page.mouse.move.call_args_list]
+        self.assertEqual(len(moves), 4)
+        self.assertEqual(moves[0], (0.0, 0.0))
+        self.assertAlmostEqual(moves[1][0], 10.0)
+        self.assertAlmostEqual(moves[1][1], 10 / 3)
+        self.assertAlmostEqual(moves[2][0], 20.0)
+        self.assertAlmostEqual(moves[2][1], 20 / 3)
+        self.assertEqual(moves[3], (30.0, 10.0))
+        self.assertEqual(page.wait_for_timeout.call_count, 4)
+        self.assertTrue(all(call.args == (17,) for call in page.wait_for_timeout.call_args_list))
+        self.assertEqual(diagnostic.event.call_args_list[-1].args[0], "pointer_motion")
+        self.assertEqual(diagnostic.event.call_args_list[-1].kwargs["pointer_path_steps"], 4)
+
+    def test_pointer_path_caps_interpolated_trajectory(self):
+        page = Mock()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+        browser.pointer_max_steps = 3
+        browser.pointer_pause_ms = 17
+        browser.inactivity_timeout_seconds = 1
+        browser._move_pointer_path(((0, 0), (30, 10), (60, 20)))
+        self.assertEqual(page.mouse.move.call_count, 3)
+
+    def test_pointer_pause_is_bounded_by_inactivity_timeout(self):
+        page = Mock()
+        diagnostic = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = diagnostic
+        browser.pointer_max_steps = 1
+        browser.pointer_pause_ms = 1000
+        browser.inactivity_timeout_seconds = 0.5
+
+        browser._move_pointer_path(((1, 2),))
+
+        page.wait_for_timeout.assert_called_once_with(500)
+
+    def test_click_control_uses_bounded_normal_click_fallback_after_pointer_interception(self):
+        control = Mock()
+        control.is_visible.return_value = True
+        control.bounding_box.return_value = {"x": 10, "y": 20, "width": 24, "height": 24}
+        error = RuntimeError("<div class=row-overlay> intercepts pointer events")
+        control.click.side_effect = [error, None]
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = Mock()
+        browser.pointer_pause_ms = 17
+        browser.pointer_max_steps = 3
+
+        browser._click_control(control)
+
+        self.assertEqual(control.click.call_count, 2)
+        self.assertEqual(control.click.call_args_list[0].kwargs, {"timeout": 2000})
+        self.assertEqual(control.click.call_args_list[1].kwargs, {"timeout": 2000})
+
+    def test_click_control_does_not_force_or_retry_unboundedly_on_other_error(self):
+        control = Mock()
+        control.is_visible.return_value = True
+        control.bounding_box.return_value = {"x": 10, "y": 20, "width": 24, "height": 24}
+        control.click.side_effect = RuntimeError("other failure")
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = Mock()
+        browser.pointer_pause_ms = 17
+        browser.pointer_max_steps = 3
+
+        with self.assertRaisesRegex(RuntimeError, "other failure"):
+            browser._click_control(control)
+
+        control.click.assert_called_once_with(timeout=2000)
 
     def test_single_media_fallback_targets_photo_and_video_checkboxes(self):
         self.assertEqual(
@@ -186,6 +407,45 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertIs(result, first)
         self.assertIs(browser.last_control_target, target)
 
+    def test_fresh_labeled_control_skips_offscreen_recycled_node(self):
+        offscreen = Mock()
+        onscreen = Mock()
+        for candidate, box in (
+            (offscreen, {"x": 10, "y": -500, "width": 44, "height": 24}),
+            (onscreen, {"x": 10, "y": 120, "width": 44, "height": 24}),
+        ):
+            candidate.is_visible.return_value = True
+            candidate.bounding_box.return_value = box
+        locator = Mock()
+        locator.count.return_value = 2
+        locator.first = offscreen
+        locator.nth.side_effect = [onscreen]
+        page = Mock()
+        page.get_by_role.return_value = locator
+        page.evaluate.return_value = {"width": 1200, "height": 800}
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        self.assertIs(browser._fresh_labeled_control("day label"), onscreen)
+
+    def test_day_selection_does_not_toggle_already_selected_day(self):
+        control = Mock()
+        control.get_attribute.side_effect = lambda name: (
+            "Seleziona tutte le foto a partire da: dom 2 ago"
+            if name == "aria-label" else "true"
+        )
+        page = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = None
+        browser._day_locator = Mock(return_value=control)
+
+        result = browser.select_current_day()
+
+        self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
+        control.click.assert_not_called()
+        self.assertEqual(browser.last_selection_kind, "day")
+
     def test_day_selection_rechecks_materialized_control_before_click(self):
         first = Mock()
         second = Mock()
@@ -198,27 +458,33 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
         browser.diagnostic = None
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
         browser._day_locator = Mock(side_effect=[first, second, second])
 
         result = browser.select_current_day()
 
         self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
         first.click.assert_not_called()
-        second.click.assert_called_once_with()
+        second.click.assert_called_once_with(timeout=2000)
 
     def test_day_selection_clicks_and_verifies_current_day_control(self):
         control = Mock()
-        control.get_attribute.side_effect = ["Seleziona tutte le foto a partire da: dom 2 ago", "true"]
+        control.get_attribute.side_effect = [
+            "Seleziona tutte le foto a partire da: dom 2 ago",
+            "false",
+            "true",
+        ]
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
         browser.diagnostic = None
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
         browser._day_locator = Mock(return_value=control)
 
         result = browser.select_current_day()
 
         self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
-        control.click.assert_called_once_with()
+        control.click.assert_called_once_with(timeout=2000)
 
     def test_first_viewport_control_retries_after_pointer_materialization(self):
         control = Mock()
@@ -291,7 +557,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         browser._click_control(current)
 
         previous_target.click.assert_not_called()
-        current_target.click.assert_called_once_with()
+        current_target.click.assert_called_once_with(timeout=2000)
 
     def test_click_control_uses_normal_visible_locator_when_visibility_api_missing(self):
         control = Mock()
@@ -302,7 +568,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         browser._click_control(control)
 
-        control.click.assert_called_once_with()
+        control.click.assert_called_once_with(timeout=2000)
 
     def test_hidden_checkbox_click_uses_visible_svg_without_force(self):
         control = Mock()
@@ -319,7 +585,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         browser._click_control(control)
 
         control.click.assert_not_called()
-        svg.click.assert_called_once_with()
+        svg.click.assert_called_once_with(timeout=2000)
 
     def test_single_media_selection_waits_for_selected_control_to_stabilize(self):
         item = Mock()
@@ -358,6 +624,85 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertIs(browser._first_viewport_control(("[role=checkbox]",)), control)
         self.assertGreaterEqual(page.mouse.move.call_count, 2)
+
+    def test_click_control_refuses_replaced_control_after_hover(self):
+        page = Mock()
+        page.evaluate.return_value = {"width": 800, "height": 600}
+        control = Mock()
+        control.is_visible.return_value = True
+        control.bounding_box.return_value = {"x": 290, "y": 240, "width": 20, "height": 20}
+        control.get_attribute.return_value = "day-label"
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.pointer_max_steps = 4
+        browser.pointer_pause_ms = 10
+        browser.inactivity_timeout_seconds = 1
+        browser._fresh_hover_control = Mock(return_value=None)
+        with self.assertRaises(CleanerError):
+            browser._click_control(control)
+        control.click.assert_not_called()
+
+    def test_fresh_hover_control_does_not_resolve_action_button_as_checkbox(self):
+        page = Mock()
+        button = Mock()
+        button.get_attribute.side_effect = lambda name: "button" if name == "role" else "Sposta nel cestino"
+        button.is_visible.return_value = True
+        button.bounding_box.return_value = {"x": 10, "y": 20, "width": 80, "height": 32}
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._fresh_labeled_control = Mock(return_value=None)
+
+        self.assertIs(browser._fresh_hover_control(button), button)
+        browser._fresh_labeled_control.assert_not_called()
+
+    def test_click_control_refreshes_hover_before_click(self):
+        page = Mock()
+        page.evaluate.return_value = {"width": 800, "height": 600}
+        control = Mock()
+        control.is_visible.return_value = True
+        control.bounding_box.return_value = {"x": 290, "y": 240, "width": 20, "height": 20}
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.pointer_max_steps = 4
+        browser.pointer_pause_ms = 10
+        browser.inactivity_timeout_seconds = 1
+        browser._click_control(control)
+
+        self.assertGreaterEqual(page.mouse.move.call_count, 4)
+        control.click.assert_called_once_with(timeout=1000)
+
+    def test_hover_approach_is_bounded_and_ends_at_control(self):
+        page = Mock()
+        page.evaluate.return_value = {"width": 800, "height": 600}
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.pointer_max_steps = 4
+        browser.pointer_pause_ms = 10
+        browser.inactivity_timeout_seconds = 1
+        control = Mock()
+        control.bounding_box.return_value = {"x": 290, "y": 240, "width": 20, "height": 20}
+
+        browser._reactivate_hover_for_control(control)
+
+        moves = [call.args for call in page.mouse.move.call_args_list]
+        self.assertEqual(len(moves), 4)
+        self.assertEqual(moves[-1], (300.0, 250.0))
+        self.assertTrue(all(0 <= x < 800 and 0 <= y < 600 for x, y in moves))
+
+    def test_click_control_uses_bounded_playwright_click_timeout(self):
+        page = Mock()
+        page.evaluate.return_value = {"width": 1000, "height": 600}
+        target = Mock()
+        target.is_visible.return_value = True
+        target.bounding_box.return_value = {"x": 10, "y": 10, "width": 20, "height": 20}
+        target.get_attribute.return_value = None
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.pointer_pause_ms = 0
+        browser.pointer_max_steps = 4
+        browser.inactivity_timeout_seconds = 60
+        browser._click_control(target)
+        target.click.assert_called_once_with(timeout=2000)
 
     def test_advance_timeline_moves_pointer_before_and_after_wheel(self):
         page = Mock()
@@ -433,12 +778,13 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
         browser.diagnostic = None
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
         browser._day_locator = Mock(side_effect=[initial, clicked, other])
 
         result = browser.select_current_day()
 
         self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
-        clicked.click.assert_called_once_with()
+        clicked.click.assert_called_once_with(timeout=2000)
 
     def test_day_selection_rechecks_fresh_control_after_click(self):
         stale = Mock()
@@ -447,19 +793,20 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         fresh.get_attribute.side_effect = lambda name: (
             "Seleziona tutte le foto a partire da: dom 2 ago"
             if name == "aria-label"
-            else "true"
+            else ("true" if fresh.click.call_count else "false")
         )
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
         browser.diagnostic = None
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
         browser._day_locator = Mock(side_effect=[stale, fresh, fresh])
 
         result = browser.select_current_day()
 
         self.assertEqual(result, "Seleziona tutte le foto a partire da: dom 2 ago")
         stale.click.assert_not_called()
-        fresh.click.assert_called_once_with()
+        fresh.click.assert_called_once_with(timeout=2000)
 
     def test_day_selection_never_falls_back_to_single_media_after_day_control_found(self):
         control = Mock()
@@ -503,6 +850,9 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(context["dom_before"]["day"], 0)
         self.assertEqual(context["dom_after"]["day"], 1)
         self.assertTrue(context["materialized"])
+        self.assertNotIn("pointer", context)
+        self.assertNotIn("x", context)
+        self.assertNotIn("y", context)
 
     def test_advance_timeline_uses_visible_mouse_wheel_and_configured_delay(self):
         page = Mock()
@@ -530,32 +880,66 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page.mouse.wheel.assert_called_once_with(0, -240)
         page.wait_for_timeout.assert_called_once_with(1500)
 
-    def test_missing_day_checkbox_falls_back_to_one_visible_media(self):
+    def test_missing_day_checkbox_falls_back_to_visible_media_batch(self):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
         browser.diagnostic = None
+        browser.max_materialized_batch = 500
         browser._day_locator = Mock(return_value=None)
-        browser._select_single_media = Mock(return_value="Foto - fallback")
+        browser.select_visible_batch = Mock(return_value=["Foto - 1", "Foto - 2"])
 
-        self.assertEqual(browser.select_current_day(), "Foto - fallback")
+        self.assertEqual(browser.select_current_day(), "batch:2")
         self.assertEqual(browser.last_selection_kind, "media")
 
-        browser._select_single_media.assert_called_once_with()
+        browser.select_visible_batch.assert_called_once_with(500)
         page.goto.assert_not_called()
 
-    def test_missing_day_checkbox_falls_back_to_visible_video(self):
+    def test_missing_day_checkbox_fallback_accepts_configured_limit_and_exclusions(self):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
         browser.diagnostic = None
+        browser.max_materialized_batch = 500
         browser._day_locator = Mock(return_value=None)
-        browser._select_single_media = Mock(return_value="Video - fallback")
+        browser.select_visible_batch = Mock(return_value=["Foto - 2"])
 
-        self.assertEqual(browser.select_current_day(), "Video - fallback")
+        self.assertEqual(
+            browser.select_current_day(batch_size=1, excluded_media_ids=("Foto - 1",)),
+            "batch:1",
+        )
+        self.assertEqual(browser.last_selection_kind, "media")
+        browser.select_visible_batch.assert_called_once_with(
+            1,
+            excluded_media_ids=("Foto - 1",),
+        )
+
+    def test_missing_day_checkbox_fallback_rejects_non_positive_limit(self):
+        page = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = None
+        browser.max_materialized_batch = 500
+        browser._day_locator = Mock(return_value=None)
+        browser.select_visible_batch = Mock(return_value=[])
+
+        with self.assertRaises(ValueError):
+            browser.select_current_day(batch_size=0)
+        browser.select_visible_batch.assert_not_called()
+
+    def test_missing_day_checkbox_falls_back_to_visible_video_batch(self):
+        page = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser.diagnostic = None
+        browser.max_materialized_batch = 500
+        browser._day_locator = Mock(return_value=None)
+        browser.select_visible_batch = Mock(return_value=["Video - 1"])
+
+        self.assertEqual(browser.select_current_day(), "batch:1")
         self.assertEqual(browser.last_selection_kind, "media")
 
-        browser._select_single_media.assert_called_once_with()
+        browser.select_visible_batch.assert_called_once_with(500)
 
     def test_viewport_control_records_selector_for_selected_control(self):
         first = Mock()
@@ -902,6 +1286,21 @@ class BrowserDiagnosticsTests(unittest.TestCase):
             "[role=checkbox][aria-checked=\"true\"]",
         )
 
+    def test_timeline_stabilization_skips_overlay_cleanup_for_legacy_page_adapter(self):
+        page = Mock()
+        page.wait_for_timeout = Mock()
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._move_pointer_path = Mock()
+        browser._dismiss_transient_dialogs = Mock()
+        browser._viewport_center_path = Mock(return_value=[(1, 1)])
+        browser._wait_for_timeout = Mock()
+
+        browser.wait_for_current_timeline()
+
+        browser._dismiss_transient_dialogs.assert_called_once_with()
+        browser._move_pointer_path.assert_called_once_with([(1, 1)])
+
     def test_visible_batch_scrolls_for_more_media_until_batch_limit(self):
         class Item:
             def __init__(self, name, owner):
@@ -961,6 +1360,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         browser = object.__new__(PlaywrightBrowser)
         browser.page = Page()
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
 
         self.assertEqual(browser.select_visible_batch(3), ["photo-1", "photo-2", "photo-3"])
         self.assertEqual(browser.page.mouse.wheel.call_count, 2)
@@ -992,10 +1392,11 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page.locator.side_effect = lambda selector: selected if 'aria-checked="true"' in selector else media
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
 
         self.assertEqual(browser.select_visible_batch(2), ["photo-1"])
-        first.click.assert_called_once_with()
-        second.click.assert_called_once_with()
+        first.click.assert_called_once_with(timeout=2000)
+        second.click.assert_called_once_with(timeout=2000)
 
     def test_visible_batch_requires_each_click_to_increment_selection_count(self):
         page = Mock()
@@ -1014,12 +1415,13 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page.locator.side_effect = locate
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
         browser._first_viewport_control = Mock(return_value=item)
 
         with self.assertRaisesRegex(Exception, "Selection did not increment"):
             browser.select_visible_batch(1)
 
-        item.click.assert_called_once_with()
+        item.click.assert_called_once_with(timeout=2000)
 
     def test_selection_handles_locator_that_shrinks_after_each_click(self):
         class Item:
@@ -1087,12 +1489,43 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(selected, ["photo-1", "photo-2", "photo-3"])
         self.assertEqual(browser.page.waits, [250, 150, 150, 150, 750])
 
+    def test_delete_selected_day_waits_for_late_confirmation_dialog(self):
+        page = Mock()
+        action = Mock()
+        dialog = Mock()
+        confirmation = Mock()
+        action.count.return_value = 1
+        action.first = action
+        action.is_visible.return_value = True
+        dialog_counts = iter([0, 0, 1])
+        dialog.count.side_effect = lambda: next(dialog_counts, 1)
+        dialog.get_by_role.return_value = confirmation
+        confirmation.count.return_value = 1
+        confirmation.first = confirmation
+        confirmation.is_visible.return_value = True
+        confirmation.bounding_box.return_value = {"x": 500, "y": 100, "width": 80, "height": 32}
+        page.get_by_role.side_effect = [action, dialog]
+        page.get_by_text.return_value.count.return_value = 0
+        selected = Mock()
+        selected.count.return_value = 1
+        page.locator.return_value = selected
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
+        browser._wait_for_timeout = Mock()
+
+        self.assertFalse(browser.delete_selected_day())
+        action.click.assert_called_once_with(timeout=2000)
+        confirmation.click.assert_called_once_with(timeout=2000)
+
     def test_delete_selected_day_marks_missing_selection_without_feedback_as_pending(self):
         page = Mock()
         action = Mock()
         action.count.return_value = 1
         action.first = action
-        page.get_by_role.return_value = action
+        dialog = Mock()
+        dialog.count.return_value = 0
+        page.get_by_role.side_effect = [action, dialog]
         page.get_by_text.return_value.count.return_value = 0
         selected = Mock()
         selected.count.side_effect = [1, 1, 0]
@@ -1102,7 +1535,52 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         self.assertFalse(browser.delete_selected_day())
 
-        action.click.assert_called_once_with()
+        action.click.assert_called_once_with(timeout=2000)
+        page.reload.assert_not_called()
+
+    def test_delete_selected_day_refreshes_only_after_positive_feedback(self):
+        page = Mock()
+        action = Mock()
+        action.count.return_value = 1
+        action.first = action
+        action.is_visible.return_value = True
+        dialog = Mock()
+        dialog.count.return_value = 0
+        page.get_by_role.side_effect = [action, dialog]
+        page.get_by_text.return_value.count.return_value = 1
+        selected = Mock()
+        selected.count.side_effect = [1, 0]
+        page.locator.return_value = selected
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._wait_for_trash_feedback = Mock(return_value=True)
+        browser.refresh_after_trash = Mock()
+        browser.last_feedback_count = None
+
+        self.assertTrue(browser.delete_selected_day())
+
+        browser.refresh_after_trash.assert_called_once_with()
+
+    def test_move_selected_to_trash_refreshes_only_after_positive_feedback(self):
+        page = Mock()
+        trash = Mock()
+        trash.count.return_value = 1
+        trash.first = trash
+        trash.is_visible.return_value = True
+        confirmation = Mock()
+        confirmation.count.return_value = 1
+        confirmation.first = confirmation
+        confirmation.is_visible.return_value = True
+        page.get_by_role.side_effect = [trash, confirmation]
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._wait_for_trash_feedback = Mock(return_value=True)
+        browser.refresh_after_trash = Mock()
+        browser.last_feedback_count = None
+
+        browser.move_selected_to_trash(["photo-1"])
+
+        browser.refresh_after_trash.assert_called_once_with()
 
     def test_retry_pending_action_uses_visible_current_target(self):
         page = Mock()
@@ -1116,13 +1594,62 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         visible.first.is_visible.return_value = True
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
         browser._visible_first = Mock(return_value=visible)
         browser.delete_selected_day = Mock(return_value=True)
         page.get_by_role.return_value = hidden
 
         self.assertTrue(browser.retry_pending_action("day label"))
         hidden.click.assert_not_called()
-        visible.click.assert_called_once_with()
+        visible.click.assert_called_once_with(timeout=2000)
+
+    def test_delete_selected_day_retries_intercepted_trash_click_once(self):
+        page = Mock()
+        page.evaluate.return_value = {"width": 1200, "height": 800}
+        action = Mock()
+        action.count.return_value = 1
+        action.first = action
+        action.is_visible.return_value = True
+        action.bounding_box.return_value = {"x": 500, "y": 100, "width": 80, "height": 32}
+        action.click.side_effect = [
+            RuntimeError("<div class=overlay> intercepts pointer events"),
+            None,
+        ]
+        dialog = Mock()
+        dialog.count.return_value = 0
+        page.get_by_role.side_effect = [action, dialog]
+        selected = Mock()
+        selected.count.side_effect = [1, 0]
+        page.locator.return_value = selected
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._wait_for_trash_feedback = Mock(return_value=True)
+        browser.refresh_after_trash = Mock()
+
+        self.assertTrue(browser.delete_selected_day())
+
+        self.assertEqual(action.click.call_count, 2)
+        self.assertEqual(action.click.call_args_list[1].kwargs, {"timeout": 2000})
+
+    def test_delete_selected_day_does_not_query_generic_delete_labels(self):
+        page = Mock()
+        action = Mock()
+        action.count.return_value = 0
+        dialog = Mock()
+        dialog.count.return_value = 0
+        page.get_by_role.return_value = action
+        selected = Mock()
+        selected.count.return_value = 1
+        page.locator.return_value = selected
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+
+        with self.assertRaises(CleanerError):
+            browser.delete_selected_day()
+
+        queried_names = [call.kwargs.get("name") for call in page.get_by_role.call_args_list]
+        self.assertNotIn("Delete", queried_names)
+        self.assertNotIn("Elimina", queried_names)
 
     def test_delete_selected_day_ignores_hidden_trash_button(self):
         page = Mock()
@@ -1145,49 +1672,66 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page.locator.return_value = selected
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
+        browser.refresh_after_trash = Mock()
 
         self.assertFalse(browser.delete_selected_day())
         hidden.click.assert_not_called()
-        visible.click.assert_called_once_with()
+        visible.click.assert_called_once_with(timeout=2000)
 
     def test_delete_selected_day_requires_positive_feedback_after_dom_disappears(self):
         page = Mock()
         action = Mock()
+        action.bounding_box.return_value = {"x": 500, "y": 100, "width": 80, "height": 32}
         action.count.return_value = 1
         action.first = action
-        page.get_by_role.return_value = action
+        dialog = Mock()
+        dialog.count.return_value = 0
+        page.get_by_role.side_effect = [action, dialog]
         page.get_by_text.return_value.count.return_value = 0
         selected = Mock()
         selected.count.side_effect = [1] + [0] * 10
         page.locator.return_value = selected
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
+        browser.refresh_after_trash = Mock()
 
         self.assertFalse(browser.delete_selected_day())
+        browser.refresh_after_trash.assert_not_called()
 
     def test_delete_selected_day_accepts_feedback_after_polling(self):
         page = Mock()
         action = Mock()
+        action.bounding_box.return_value = {"x": 500, "y": 100, "width": 80, "height": 32}
         action.count.return_value = 1
         action.first = action
         action.first.is_visible.return_value = True
-        page.get_by_role.return_value = action
+        dialog = Mock()
+        dialog.count.return_value = 0
+        page.get_by_role.side_effect = [action, dialog]
         page.get_by_text.return_value.count.side_effect = [0] * 20 + [1]
         selected = Mock()
         selected.count.side_effect = [1] + [0] * 10
         page.locator.return_value = selected
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
-
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
+        browser.refresh_after_trash = Mock()
+        browser.last_feedback_count = None
         self.assertTrue(browser.delete_selected_day())
+        browser.refresh_after_trash.assert_called_once_with()
 
     def test_delete_selected_day_completion_logs_feedback_source(self):
         page = Mock()
         action = Mock()
+        action.bounding_box.return_value = {"x": 500, "y": 100, "width": 80, "height": 32}
         action.count.return_value = 1
         action.first = action
         action.first.is_visible.return_value = True
-        page.get_by_role.return_value = action
+        dialog = Mock()
+        dialog.count.return_value = 0
+        page.get_by_role.side_effect = [action, dialog]
         page.get_by_text.return_value.count.return_value = 1
         page.get_by_text.return_value.first = page.get_by_text.return_value
         page.get_by_text.return_value.first.is_visible.return_value = True
@@ -1197,7 +1741,10 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         diagnostic = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
         browser.diagnostic = diagnostic
+        browser.refresh_after_trash = Mock()
+        browser.last_feedback_count = None
 
         self.assertTrue(browser.delete_selected_day())
 
@@ -1207,21 +1754,28 @@ class BrowserDiagnosticsTests(unittest.TestCase):
     def test_delete_selected_day_accepts_positive_feedback(self):
         page = Mock()
         action = Mock()
+        action.bounding_box.return_value = {"x": 500, "y": 100, "width": 80, "height": 32}
         action.count.return_value = 1
         action.first = action
-        page.get_by_role.return_value = action
+        dialog = Mock()
+        dialog.count.return_value = 0
+        page.get_by_role.side_effect = [action, dialog]
         page.get_by_text.return_value.count.side_effect = [1]
         selected = Mock()
         selected.count.side_effect = [1, 0]
         page.locator.return_value = selected
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
+        browser.refresh_after_trash = Mock()
+        browser.last_feedback_count = None
 
         self.assertTrue(browser.delete_selected_day())
 
     def test_delete_selected_day_clicks_confirm_when_second_button_appears(self):
         page = Mock()
         action = Mock()
+        action.bounding_box.return_value = {"x": 500, "y": 100, "width": 80, "height": 32}
         confirmation = Mock()
         action.count.return_value = 1
         action.first = action
@@ -1230,6 +1784,8 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         dialog.get_by_role.return_value = confirmation
         confirmation.count.return_value = 1
         confirmation.first = confirmation
+        confirmation.is_visible.return_value = True
+        confirmation.bounding_box.return_value = {"x": 500, "y": 100, "width": 80, "height": 32}
         page.get_by_role.side_effect = [action, dialog]
         page.get_by_text.return_value.count.return_value = 1
         selected = Mock()
@@ -1237,11 +1793,14 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page.locator.return_value = selected
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
+        browser.refresh_after_trash = Mock()
+        browser.last_feedback_count = None
 
         browser.delete_selected_day()
 
-        action.click.assert_called_once_with()
-        confirmation.click.assert_called_once_with()
+        action.click.assert_called_once_with(timeout=2000)
+        confirmation.click.assert_called_once_with(timeout=2000)
 
     def test_move_to_trash_ignores_hidden_action_button(self):
         page = Mock()
@@ -1261,12 +1820,13 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page.get_by_text.return_value = feedback
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
 
         with self.assertRaises(CleanerError):
             browser.move_selected_to_trash(["photo-1"])
 
         hidden.click.assert_not_called()
-        visible.click.assert_called_once_with()
+        visible.click.assert_called_once_with(timeout=2000)
 
     def test_move_to_trash_feedback_event_includes_source(self):
         page = Mock()
@@ -1279,6 +1839,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         confirmation.first = confirmation
         confirmation.last = confirmation
         confirmation.first.is_visible.return_value = True
+        confirmation.bounding_box.return_value = {"x": 500, "y": 100, "width": 80, "height": 32}
         page.get_by_role.side_effect = [trash, confirmation]
         feedback = Mock()
         feedback.count.return_value = 1
@@ -1288,9 +1849,12 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         diagnostic = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
         browser.diagnostic = diagnostic
+        browser.refresh_after_trash = Mock()
 
         browser.move_selected_to_trash(["photo-1"])
+        browser.refresh_after_trash.assert_called_once_with()
 
         event = next(call for call in diagnostic.event.call_args_list if call.args[0] == "trash_batch_feedback_checked")
         self.assertEqual(event.kwargs["feedback_source"], "browser_positive_feedback")
@@ -1310,11 +1874,14 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         confirmation.is_visible.return_value = True
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
+        browser.refresh_after_trash = Mock()
+        browser.last_feedback_count = None
 
         browser.move_selected_to_trash(["photo-1"])
 
-        trash.click.assert_called_once_with()
-        confirmation.click.assert_called_once_with()
+        trash.click.assert_called_once_with(timeout=2000)
+        confirmation.click.assert_called_once_with(timeout=2000)
 
     def test_move_to_trash_rejects_hidden_confirmation_button(self):
         page = Mock()
@@ -1336,6 +1903,30 @@ class BrowserDiagnosticsTests(unittest.TestCase):
 
         confirmation.click.assert_not_called()
 
+    def test_move_to_trash_rejects_feedback_with_inconsistent_quantity(self):
+        page = Mock()
+        trash = Mock()
+        confirmation = Mock()
+        trash.count.return_value = 1
+        trash.first = trash
+        trash.first.is_visible.return_value = True
+        confirmation.count.return_value = 1
+        confirmation.first = confirmation
+        confirmation.first.is_visible.return_value = True
+        page.get_by_role.side_effect = [trash, confirmation]
+        confirmation.is_visible.return_value = True
+        confirmation.bounding_box.return_value = {"x": 500, "y": 100, "width": 80, "height": 32}
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
+        browser.last_feedback_count = 2
+        browser._wait_for_trash_feedback = Mock(return_value=True)
+
+        with self.assertRaises(CleanerError):
+            browser.move_selected_to_trash(["photo-1"])
+
+        confirmation.click.assert_called_once_with(timeout=2000)
+
     def test_move_to_trash_rejects_missing_positive_feedback(self):
         page = Mock()
         trash = Mock()
@@ -1348,6 +1939,7 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         confirmation.last = confirmation
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._fresh_hover_control = Mock(side_effect=lambda control: control)
 
         with self.assertRaises(CleanerError):
             browser.move_selected_to_trash(["photo-1"])
@@ -1861,10 +2453,33 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         page = Mock()
         browser = object.__new__(PlaywrightBrowser)
         browser.page = page
+        browser._dismiss_transient_dialogs = Mock()
 
         browser.wait_for_current_timeline()
 
+        browser._dismiss_transient_dialogs.assert_called_once_with()
         page.wait_for_timeout.assert_called_once_with(250)
+
+    def test_recover_clicks_known_visible_overlay_with_normal_click(self):
+        page = Mock()
+        button = Mock()
+        button.count.return_value = 1
+        button.first = button
+        button.first.is_visible.return_value = True
+        hidden = Mock()
+        hidden.count.return_value = 0
+        page.get_by_role.side_effect = [button, hidden, hidden, hidden]
+        browser = object.__new__(PlaywrightBrowser)
+        browser.page = page
+        browser._click_control = Mock()
+
+        browser.recover()
+
+        browser._click_control.assert_called_once_with(button)
+        self.assertEqual(
+            page.wait_for_timeout.call_args_list,
+            [unittest.mock.call(150), unittest.mock.call(500)],
+        )
 
     def test_recover_preserves_timeline_and_dismisses_known_dialogs(self):
         page = Mock()
@@ -1876,7 +2491,10 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         browser.recover()
 
         page.reload.assert_not_called()
-        page.wait_for_timeout.assert_called_once_with(500)
+        self.assertEqual(
+            page.wait_for_timeout.call_args_list,
+            [unittest.mock.call(150), unittest.mock.call(500)],
+        )
 
 
 if __name__ == "__main__":

@@ -86,13 +86,17 @@ def run(argv=None) -> int:
     checkpoint_state = None
     checkpoint_reason = None
     try:
-        browser = PlaywrightBrowser(
-            args.profile_dir,
-            headless=False,
-            scroll_step=args.scroll_step,
-            scroll_delay_ms=args.scroll_delay_ms,
-            diagnostic=diagnostic,
-        )
+        browser_options = {
+            "headless": False,
+            "scroll_step": args.scroll_step,
+            "scroll_delay_ms": args.scroll_delay_ms,
+            "pointer_pause_ms": args.pointer_pause_ms,
+            "pointer_max_steps": args.pointer_max_steps,
+            "inactivity_timeout_seconds": args.inactivity_timeout_seconds,
+            "diagnostic": diagnostic,
+            "cdp_url": args.cdp_url,
+        }
+        browser = PlaywrightBrowser(args.profile_dir, **browser_options)
         diagnostic.event(
             "browser_started",
             **process_context(),
@@ -110,6 +114,10 @@ def run(argv=None) -> int:
             max_day_scan_failures=args.max_day_scan_failures,
             pending_policy=args.pending_action,
             pending_timeout_ms=args.pending_timeout_ms,
+            pointer_pause_ms=args.pointer_pause_ms,
+            pointer_max_steps=args.pointer_max_steps,
+            inactivity_timeout_seconds=args.inactivity_timeout_seconds,
+            cdp_url=args.cdp_url,
         )
         diagnostic.event(
             "run_configured",
@@ -117,6 +125,8 @@ def run(argv=None) -> int:
             mode="dry-run" if args.dry_run else "delete",
             pending_policy=args.pending_action,
             pending_timeout_ms=args.pending_timeout_ms,
+            execute=args.execute,
+            confirm_all_media_to_trash=args.confirm_all_media_to_trash,
         )
         cleaner = Cleaner(
             browser,
@@ -139,6 +149,8 @@ def run(argv=None) -> int:
             discard_ambiguous_media_batches=args.pending_action == "discard",
             pending_policy=args.pending_action,
             pending_timeout_ms=args.pending_timeout_ms,
+            execute=args.execute,
+            confirm_all_media_to_trash=args.confirm_all_media_to_trash,
         )
         cleaner.reconcile_pending_only = args.reconcile_pending
         # One invocation owns one bounded pass. Cleaner handles bounded

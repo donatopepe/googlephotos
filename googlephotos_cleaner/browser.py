@@ -12,7 +12,10 @@ from .lock import ProfileLock
 
 
 def is_authenticated_url(url: str) -> bool:
-    return url.startswith("https://photos.google.com/") and "/about" not in url
+    if not url.startswith("https://photos.google.com/"):
+        return False
+    lowered = url.lower()
+    return "/about" not in lowered and "/login" not in lowered and "signin" not in lowered
 
 
 class PlaywrightBrowser:
@@ -24,6 +27,18 @@ class PlaywrightBrowser:
 
     DEFAULT_SCROLL_STEP = 240
     DEFAULT_SCROLL_DELAY_MS = 1500
+    TARGET_CLOSED_ERROR_NAMES = frozenset(
+        {"TargetClosedError", "BrowserClosedError", "ContextClosedError"}
+    )
+    TARGET_CLOSED_ERROR_MARKERS = (
+        "target page, context or browser has been closed",
+        "target closed",
+        "browser has been closed",
+        "context has been closed",
+    )
+    DEFAULT_POINTER_PAUSE_MS = 40
+    DEFAULT_POINTER_MAX_STEPS = 4
+    DEFAULT_INACTIVITY_TIMEOUT_SECONDS = 300
 
     # Google Photos DOM labels can change. Selectors are centralized here and
     # every destructive action is guarded by a visible, non-empty selection.
@@ -50,6 +65,10 @@ class PlaywrightBrowser:
     MEDIA_SELECTORS = (
         '[role="checkbox"][aria-checked="false"][aria-label*=" - "]',
     )
+    # Selector intentionally excludes the Trash route; only library media is
+    # eligible for this cleaner. Both photo and video labels are accepted via
+    # the shared accessible-label separator used by Photos.
+    TRASH_ROUTE_MARKERS = ("/trash", "/bin")
     TRASH_FEEDBACK_LIVE_REGION_SELECTORS = (
         ("status", '[role="status"]'),
         ("alert", '[role="alert"]'),
@@ -71,18 +90,34 @@ class PlaywrightBrowser:
         headless: bool = False,
         scroll_step: int = 240,
         scroll_delay_ms: int = 1500,
+        pointer_pause_ms: int = DEFAULT_POINTER_PAUSE_MS,
+        pointer_max_steps: int = DEFAULT_POINTER_MAX_STEPS,
+        inactivity_timeout_seconds: int = DEFAULT_INACTIVITY_TIMEOUT_SECONDS,
         diagnostic=None,
+        cdp_url: str | None = None,
     ) -> None:
         if scroll_step <= 0:
             raise ValueError("scroll_step must be greater than zero")
         if scroll_delay_ms <= 0:
             raise ValueError("scroll_delay_ms must be greater than zero")
+        self._validate_pointer_options(
+            pointer_pause_ms=pointer_pause_ms,
+            pointer_max_steps=pointer_max_steps,
+            inactivity_timeout_seconds=inactivity_timeout_seconds,
+        )
         self.scroll_step = scroll_step
         self.scroll_delay_ms = scroll_delay_ms
+        self.pointer_pause_ms = pointer_pause_ms
+        self.pointer_max_steps = pointer_max_steps
+        self.inactivity_timeout_seconds = inactivity_timeout_seconds
+        self.batch_size = 50
+        self.max_materialized_batch = 500
+        self.last_batch_ids: list[str] = []
         self.diagnostic = diagnostic
         profile_dir = profile_dir.expanduser().resolve()
         profile_dir.mkdir(parents=True, exist_ok=True)
         self.profile_dir = profile_dir
+        self.cdp_url = cdp_url
         self.profile_lock = ProfileLock(profile_dir / ".googlephotos.lock")
         self.profile_lock.acquire()
         if getattr(self, "diagnostic", None) is not None:
@@ -101,10 +136,25 @@ class PlaywrightBrowser:
             ) from exc
 
         self._playwright = None
+        self.browser = None
         self.context = None
         self.page = None
         try:
             self._playwright = sync_playwright().start()
+            if self.cdp_url:
+                self.browser = self._playwright.chromium.connect_over_cdp(self.cdp_url)
+                self.context = self.browser.contexts[0] if self.browser.contexts else None
+                self.page = self.context.pages[0] if self.context and self.context.pages else None
+                if self.page is None:
+                    raise CleanerError("CDP browser has no usable page")
+                if getattr(self, "diagnostic", None) is not None:
+                    self.diagnostic.event(
+                        "browser_cdp_connected",
+                        cdp_url=self.cdp_url,
+                        page_count=len(self.context.pages),
+                        url=self.page.url,
+                    )
+                return
         except Exception:
             self.profile_lock.release()
             raise
@@ -173,7 +223,111 @@ class PlaywrightBrowser:
                 profile_dir=str(self.profile_dir),
             )
 
-    def wait_until_authenticated(self, timeout_seconds: int = 300) -> None:
+    def _is_trash_route(self) -> bool:
+        url = getattr(self.page, "url", "")
+        if not isinstance(url, str):
+            return False
+        lowered = url.lower()
+        return any(marker in lowered for marker in self.TRASH_ROUTE_MARKERS)
+
+    @staticmethod
+    def _validate_pointer_options(
+        *,
+        pointer_pause_ms: int,
+        pointer_max_steps: int,
+        inactivity_timeout_seconds: int = DEFAULT_INACTIVITY_TIMEOUT_SECONDS,
+    ) -> None:
+        if pointer_pause_ms <= 0:
+            raise ValueError("pointer_pause_ms must be greater than zero")
+        if pointer_max_steps <= 0:
+            raise ValueError("pointer_max_steps must be greater than zero")
+        if inactivity_timeout_seconds <= 0:
+            raise ValueError("inactivity_timeout_seconds must be greater than zero")
+
+    def _inactivity_timeout_ms(self) -> int:
+        timeout_seconds = getattr(
+            self, "inactivity_timeout_seconds", self.DEFAULT_INACTIVITY_TIMEOUT_SECONDS
+        )
+        return max(1, round(timeout_seconds * 1000))
+
+    def _wait_for_timeout(self, milliseconds: int) -> None:
+        """Sleep without allowing one scan wait to exceed the inactivity bound."""
+        self.page.wait_for_timeout(min(max(0, milliseconds), self._inactivity_timeout_ms()))
+
+    def _wait_for_selector(self, selector: str, *, timeout_ms: int | None = None):
+        """Wait for a selector with a hard inactivity ceiling."""
+        timeout = self._inactivity_timeout_ms() if timeout_ms is None else min(
+            max(1, timeout_ms), self._inactivity_timeout_ms()
+        )
+        return self.page.wait_for_selector(selector, timeout=timeout)
+
+    @classmethod
+    def _is_target_closed_error(cls, error: Exception) -> bool:
+        if type(error).__name__ in cls.TARGET_CLOSED_ERROR_NAMES:
+            return True
+        message = str(error).lower()
+        return any(marker in message for marker in cls.TARGET_CLOSED_ERROR_MARKERS)
+
+    def _rebind_cdp_page_after_target_close(self, error: Exception) -> bool:
+        """Rebind observation page after CDP target replacement; never retry action."""
+        if not self.cdp_url or not self._is_target_closed_error(error):
+            return False
+        context = getattr(self, "context", None)
+        old_page = getattr(self, "page", None)
+        if context is None:
+            return False
+        # CDP may keep same tab alive while Playwright's wrapper target closes.
+        # Rebind same authenticated page before looking for a replacement.
+        try:
+            if old_page is not None and not old_page.is_closed() and is_authenticated_url(old_page.url):
+                self.page = old_page
+                return True
+        except Exception:
+            pass
+        deadline = time.monotonic() + min(2.0, self._inactivity_timeout_ms() / 1000)
+        while time.monotonic() < deadline:
+            try:
+                pages = list(context.pages)
+            except Exception:
+                pages = []
+            for page in pages:
+                if page is old_page:
+                    continue
+                try:
+                    if page.is_closed() or not is_authenticated_url(page.url):
+                        continue
+                except Exception:
+                    continue
+                self.page = page
+                if getattr(self, "diagnostic", None) is not None:
+                    self.diagnostic.event(
+                        "browser_page_rebound",
+                        reason="target_closed_during_observation",
+                        page_count=len(pages),
+                        url=page.url,
+                    )
+                return True
+            time.sleep(0.1)
+        return False
+
+    def _wait_for_page_timeout(self, milliseconds: int) -> None:
+        """Wait once; rebind only after target closure, never repeat click."""
+        try:
+            self._wait_for_timeout(milliseconds)
+        except Exception as error:
+            if self._rebind_cdp_page_after_target_close(error):
+                return
+            raise
+
+    def wait_until_authenticated(self, timeout_seconds: int | None = None) -> None:
+        if self._is_trash_route():
+            raise CleanerError("Refusing to operate on the Google Photos Trash route")
+        if timeout_seconds is None:
+            timeout_seconds = getattr(
+                self, "inactivity_timeout_seconds", self.DEFAULT_INACTIVITY_TIMEOUT_SECONDS
+            )
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than zero")
         deadline = time.monotonic() + timeout_seconds
         checks = 0
         while time.monotonic() < deadline:
@@ -190,7 +344,8 @@ class PlaywrightBrowser:
                 )
             if authenticated:
                 return
-            self.page.wait_for_timeout(1000)
+            remaining_ms = max(1, round((deadline - time.monotonic()) * 1000))
+            self._wait_for_timeout(min(1000, remaining_ms))
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "authentication_timeout",
@@ -201,21 +356,120 @@ class PlaywrightBrowser:
         raise CleanerError("Google Photos login did not complete before timeout")
 
     def wait_for_current_timeline(self) -> None:
-        """Let the current visible Google Photos timeline stabilize."""
-        self.page.wait_for_timeout(250)
+        """Let current visible Google Photos timeline stabilize."""
+        self._dismiss_transient_dialogs()
+        self._move_pointer_path(self._viewport_center_path())
+        self._wait_for_timeout(250)
 
-    def _move_pointer_path(self, points: Sequence[tuple[float, float]], *, pause_ms: int = 80) -> None:
-        """Move through bounded viewport points using normal visible mouse input."""
-        for x, y in points:
-            self.page.mouse.move(x, y)
-            if pause_ms > 0:
-                self.page.wait_for_timeout(pause_ms)
+    def _dismiss_transient_dialogs(self) -> None:
+        """Close known non-destructive overlays before normal timeline input."""
+        get_by_role = getattr(self.page, "get_by_role", None)
+        if get_by_role is None:
+            return
+        for name in (
+            "Got it",
+            "OK",
+            "Chiudi",
+            "Close",
+        ):
+            button = get_by_role("button", name=name)
+            try:
+                if button.count() <= 0 or not button.first.is_visible():
+                    continue
+                self._click_control(button.first)
+            except (TypeError, AttributeError):
+                continue
+
+    def _dismiss_known_overlays(self) -> None:
+        """Bounded overlay cleanup used before retrying a scan interaction."""
+        self._dismiss_transient_dialogs()
+        self._wait_for_timeout(150)
+
+    def refresh_after_trash(self) -> None:
+        """Reload only after caller has positive proof of a Trash action."""
+        reload_page = getattr(self.page, "reload", None)
+        if not callable(reload_page):
+            raise CleanerError("Google Photos page cannot be refreshed safely")
+        timeout_ms = min(2000, self._inactivity_timeout_ms())
+        try:
+            try:
+                reload_page(timeout=timeout_ms, wait_until="domcontentloaded")
+            except TypeError as exc:
+                # Keep compatibility with minimal browser adapters exposing only
+                # reload(), but never retry other reload failures.
+                if "timeout" not in str(exc) and "wait_until" not in str(exc):
+                    raise
+                reload_page()
+        except Exception as exc:
+            if self._is_target_closed_error(exc):
+                if self._rebind_cdp_page_after_target_close(exc):
+                    raise CleanerError("Google Photos page closed during post-trash refresh") from exc
+            raise CleanerError("Google Photos refresh failed after confirmed Trash action") from exc
+        self.wait_until_authenticated()
+        self.wait_for_current_timeline()
+        if getattr(self, "diagnostic", None) is not None:
+            self.diagnostic.event(
+                "post_trash_refresh_completed",
+                result="refreshed_and_stabilized",
+                positive_feedback=True,
+                feedback_source=getattr(self, "last_feedback_source", None),
+            )
+
+    def _viewport_center_path(self) -> tuple[tuple[float, float], ...]:
+        try:
+            viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+            width = viewport.get("width", 0)
+            height = viewport.get("height", 0)
+            if not isinstance(width, (int, float)) or not isinstance(height, (int, float)):
+                return ()
+            if width <= 0 or height <= 0:
+                return ()
+        except (AttributeError, TypeError):
+            return ()
+        x = viewport["width"] / 2
+        y = viewport["height"] / 2
+        return ((x, y),)
+
+    def _move_pointer_path(
+        self, points: Sequence[tuple[float, float]], *, pause_ms: int | None = None
+    ) -> None:
+        """Move along a bounded, interpolated viewport trajectory using visible input."""
+        max_steps = getattr(self, "pointer_max_steps", self.DEFAULT_POINTER_MAX_STEPS)
+        configured_pause = getattr(self, "pointer_pause_ms", self.DEFAULT_POINTER_PAUSE_MS)
+        # ``pause_ms`` remains accepted for old internal callers, but configured
+        # pointer options cap every path so a fallback cannot retry unboundedly.
+        pause = configured_pause if pause_ms is None else min(pause_ms, configured_pause)
+        waypoints = tuple(points)
+        mouse = getattr(self.page, "mouse", None)
+        if mouse is None or not callable(getattr(mouse, "move", None)) or not waypoints:
+            return
+        if len(waypoints) == 1:
+            trajectory = waypoints
+        else:
+            segment_count = len(waypoints) - 1
+            trajectory = []
+            for step in range(max_steps):
+                position = step / max(1, max_steps - 1)
+                segment = min(int(position * segment_count), segment_count - 1)
+                local = position * segment_count - segment
+                start_x, start_y = waypoints[segment]
+                end_x, end_y = waypoints[segment + 1]
+                trajectory.append(
+                    (
+                        float(start_x) + (float(end_x) - float(start_x)) * local,
+                        float(start_y) + (float(end_y) - float(start_y)) * local,
+                    )
+                )
+        for x, y in trajectory:
+            mouse.move(x, y)
+            if pause > 0:
+                self._wait_for_timeout(pause)
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "pointer_motion",
-                pointer_moves=len(points),
-                pointer_path_steps=len(points),
-                pause_ms=pause_ms,
+                pointer_moves=len(trajectory),
+                pointer_path_steps=len(trajectory),
+                pause_ms=pause,
             )
 
     def advance_timeline(self) -> bool:
@@ -226,16 +480,17 @@ class PlaywrightBrowser:
         y = viewport["height"] / 2
         step = getattr(self, "scroll_step", self.DEFAULT_SCROLL_STEP)
         delay = getattr(self, "scroll_delay_ms", self.DEFAULT_SCROLL_DELAY_MS)
-        self._move_pointer_path(((x * 0.72, y * 0.66), (x, y)), pause_ms=40)
+        self._move_pointer_path(((x * 0.72, y * 0.66), (x, y)))
         self.page.mouse.wheel(0, step)
-        self._move_pointer_path(((x * 0.88, y * 0.58), (x, y)), pause_ms=40)
-        self.page.wait_for_timeout(delay)
+        self._move_pointer_path(((x * 0.88, y * 0.58), (x, y)))
+        self._wait_for_timeout(delay)
         after = self._dom_counts() if getattr(self, "diagnostic", None) is not None else {}
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "timeline_advanced",
                 viewport=viewport,
-                pointer={"x": x, "y": y},
+                pointer_moves=4,
+                pointer_path_steps=4,
                 wheel_delta_x=0,
                 wheel_delta_y=step,
                 scroll_step=step,
@@ -258,7 +513,7 @@ class PlaywrightBrowser:
         step = getattr(self, "scroll_step", self.DEFAULT_SCROLL_STEP)
         delay = getattr(self, "scroll_delay_ms", self.DEFAULT_SCROLL_DELAY_MS)
         self.page.mouse.wheel(0, -step)
-        self.page.wait_for_timeout(delay)
+        self._wait_for_timeout(delay)
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "timeline_reset",
@@ -298,11 +553,159 @@ class PlaywrightBrowser:
                 continue
         return None
 
+    @staticmethod
+    def _is_pointer_interception_error(error: Exception) -> bool:
+        message = str(error).lower()
+        return "intercepts pointer events" in message
+
+    def _visible_target_point(self, target) -> tuple[float, float] | None:
+        try:
+            box = target.bounding_box()
+        except Exception:
+            return None
+        if not isinstance(box, dict):
+            return None
+        try:
+            box_width = float(box.get("width", 0))
+            box_height = float(box.get("height", 0))
+            box_x = float(box.get("x", 0))
+            box_y = float(box.get("y", 0))
+        except (TypeError, ValueError):
+            return None
+        if box_width <= 0 or box_height <= 0:
+            return None
+        viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+        x = box_x + box_width / 2
+        y = box_y + box_height / 2
+        if isinstance(viewport, dict):
+            width = viewport.get("width", 0)
+            height = viewport.get("height", 0)
+            if not isinstance(width, (int, float)) or not isinstance(height, (int, float)):
+                return None
+            if not (0 <= x < width and 0 <= y < height):
+                return None
+        return x, y
+
+    def _reactivate_hover_for_control(self, control) -> None:
+        """Re-enter a visible control's container before reading it for a click."""
+        point = self._visible_target_point(control)
+        if point is None:
+            return
+        hover_point = self._visible_ancestor_point(control) or point
+        self._move_pointer_path(
+            self._hover_approach_path(*point, hover_point=hover_point),
+            pause_ms=min(120, getattr(self, "pointer_pause_ms", self.DEFAULT_POINTER_PAUSE_MS)),
+        )
+        self._wait_for_timeout(120)
+
+    def _visible_ancestor_point(self, control) -> tuple[float, float] | None:
+        """Return the center of the nearest visible ancestor already in viewport."""
+        viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+        if not isinstance(viewport, dict):
+            return None
+        for depth in range(1, 7):
+            try:
+                ancestor = control.locator("xpath=" + "/.." * depth)
+                box = ancestor.bounding_box()
+            except Exception:
+                continue
+            if not isinstance(box, dict):
+                continue
+            try:
+                x, y = float(box["x"]), float(box["y"])
+                width, height = float(box["width"]), float(box["height"])
+                viewport_width = float(viewport["width"])
+                viewport_height = float(viewport["height"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if width <= 0 or height <= 0:
+                continue
+            if x < 0 or y < 0 or x >= viewport_width or y >= viewport_height:
+                continue
+            if x + width > viewport_width or y + height > viewport_height:
+                continue
+            return x + width / 2, y + height / 2
+        return None
+
+    def _fresh_hover_control(self, control):
+        """Re-resolve control after hover because virtualized rows may rerender."""
+        label = None
+        try:
+            label = control.get_attribute("aria-label")
+        except Exception:
+            pass
+        if not isinstance(label, str) or not label:
+            return control
+        if getattr(control, "get_attribute", None) is not None:
+            try:
+                role = control.get_attribute("role")
+            except Exception:
+                role = None
+            if role == "button":
+                return control
+        # Trash controls are often implicit buttons without a role attribute;
+        # never reinterpret their accessible label as a media checkbox label.
+        normalized_label = " ".join(label.split()).casefold()
+        if normalized_label in {
+            "move to trash",
+            "sposta nel cestino",
+            "move to bin",
+        }:
+            return control
+        fresh = self._fresh_labeled_control(label)
+        if fresh is not None and self._visible_target_point(fresh) is not None:
+            return fresh
+        return None
+
+    def _hover_approach_path(
+        self, x: float, y: float, *, hover_point: tuple[float, float] | None = None
+    ) -> tuple[tuple[float, float], ...]:
+        viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+        width = float(viewport.get("width", x)) if isinstance(viewport, dict) else x
+        height = float(viewport.get("height", y)) if isinstance(viewport, dict) else y
+        destination = hover_point or (x, y)
+        start = (
+            max(0.0, min(width - 1.0, destination[0] - 80.0)),
+            max(0.0, min(height - 1.0, destination[1] - 50.0)),
+        )
+        return (start, destination, (x, y))
+
     def _click_control(self, control) -> None:
         target = self._visible_control_target(control)
         if target is None:
             raise CleanerError("Visible control target not found")
-        target.click()
+        # Playwright Locator objects resolve against the current DOM at action
+        # time. Re-resolving by label here would add another race for virtualized
+        # rows; visibility and bounding-box checks above are the fail-closed gate.
+        # Re-resolve labeled controls after hover because virtualized rows may rerender.
+        self._reactivate_hover_for_control(target)
+        refreshed = self._fresh_hover_control(target)
+        if refreshed is None:
+            raise CleanerError("Visible control target was replaced after hover")
+        target = refreshed
+        click_timeout = min(2000, self._inactivity_timeout_ms())
+        try:
+            try:
+                target.click(timeout=click_timeout)
+            except TypeError as exc:
+                if "timeout" not in str(exc):
+                    raise
+                target.click()
+        except Exception as exc:
+            if not self._is_pointer_interception_error(exc):
+                raise
+            # One bounded, normal-click retry only. Never force-click or retry a
+            # second time after this attempt; caller must fail closed.
+            point = self._visible_target_point(target)
+            if point is None:
+                raise CleanerError("Intercepted control is no longer visibly clickable") from exc
+            self._move_pointer_path((point,))
+            try:
+                target.click(timeout=click_timeout)
+            except TypeError as retry_error:
+                if "timeout" not in str(retry_error):
+                    raise
+                target.click()
 
     def _first_viewport_control(self, selectors: Sequence[str]):
         """Return top-left control in viewport without programmatic scrolling.
@@ -346,15 +749,14 @@ class PlaywrightBrowser:
                 if parent_box is None:
                     continue
                 parent_point = (
-                    parent_box["x"] + min(parent_box["width"] / 2, 5),
-                    parent_box["y"] + min(parent_box["height"] / 2, 5),
+                    parent_box["x"] + parent_box["width"] / 2,
+                    parent_box["y"] + parent_box["height"] / 2,
                 )
                 self._move_pointer_path(
                     (
                         (parent_point[0] - 18, parent_point[1] - 12),
                         parent_point,
-                    ),
-                    pause_ms=40,
+                    )
                 )
                 try:
                     box = candidate.bounding_box()
@@ -373,7 +775,7 @@ class PlaywrightBrowser:
                 # state settles; re-read it after the visible pointer move.
                 if box is None or box["width"] <= 0 or box["height"] <= 0:
                     self._move_pointer_path((parent_point,), pause_ms=120)
-                    self.page.wait_for_timeout(150)
+                    self._wait_for_timeout(150)
                     try:
                         box = candidate.bounding_box()
                     except Exception:
@@ -397,6 +799,27 @@ class PlaywrightBrowser:
         self.last_control_target = selected[4]
         return selected[3]
 
+    def _fresh_labeled_control(self, label: str):
+        """Resolve the same visible, materialized checkbox immediately before click."""
+        try:
+            locator = self.page.get_by_role("checkbox", name=label, exact=True)
+            viewport = self.page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+            count = locator.count()
+            for index in range(count):
+                candidate = locator.first if index == 0 else locator.nth(index)
+                if not candidate.is_visible():
+                    continue
+                box = candidate.bounding_box()
+                if not box or box["width"] <= 0 or box["height"] <= 0:
+                    continue
+                if isinstance(viewport, dict):
+                    if not (0 <= box["x"] < viewport.get("width", 0) and 0 <= box["y"] < viewport.get("height", 0)):
+                        continue
+                return candidate
+            return None
+        except (AttributeError, TypeError, StopIteration):
+            return None
+
     def _day_locator(self):
         return self._first_viewport_control(self.DAY_SELECTORS)
 
@@ -416,14 +839,29 @@ class PlaywrightBrowser:
                 fallback=fallback,
             )
 
-    def select_current_day(self) -> str | None:
-        self.page.wait_for_timeout(750)
+    def select_current_day(
+        self,
+        *,
+        batch_size: int | None = None,
+        excluded_media_ids: Sequence[str] = (),
+    ) -> str | None:
+        if batch_size is not None and batch_size <= 0:
+            raise ValueError("batch_size must be greater than zero")
+        if self._is_trash_route():
+            raise CleanerError("Refusing to select media from the Google Photos Trash route")
+        self._wait_for_timeout(750)
         control = self._day_locator()
         if control is None:
-            media = self._select_single_media()
-            if media is not None:
-                self.last_selection_kind = "media"
-            return media
+            effective_batch_size = batch_size if batch_size is not None else self.max_materialized_batch
+            if batch_size is None and not excluded_media_ids:
+                media = self.select_visible_batch(effective_batch_size)
+            else:
+                media = self.select_visible_batch(
+                    effective_batch_size,
+                    excluded_media_ids=excluded_media_ids,
+                )
+            self.last_selection_kind = "media" if media else None
+            return f"batch:{len(media)}" if media else None
         label = control.get_attribute("aria-label") or "unknown-day"
         before = control.get_attribute("aria-checked")
         # Re-resolve after pointer materialization. Virtualized rows can expose
@@ -433,8 +871,24 @@ class PlaywrightBrowser:
             control = materialized
             label = control.get_attribute("aria-label") or label
             before = control.get_attribute("aria-checked")
+        fresh = self._fresh_labeled_control(label)
+        if fresh is not None:
+            control = fresh
+            before = control.get_attribute("aria-checked")
+        if before == "true":
+            self.last_selection_kind = "day"
+            self._log_selection(
+                kind="day",
+                selector=getattr(self, "last_locator_selector", "DAY_SELECTORS"),
+                label=label,
+                before=before,
+                after=before,
+                verified=True,
+            )
+            return label
+        self._reactivate_hover_for_control(control)
         self._click_control(control)
-        self.page.wait_for_timeout(150)
+        self._wait_for_timeout(150)
         # Read clicked locator first. Google Photos may reorder virtualized rows,
         # so the topmost fresh locator can represent a different day.
         try:
@@ -487,6 +941,7 @@ class PlaywrightBrowser:
             return None
         label = item.get_attribute("aria-label") or "single-media"
         before = item.get_attribute("aria-checked")
+        self._reactivate_hover_for_control(item)
         self._click_control(item)
         after = item.get_attribute("aria-checked")
         selected = self.page.locator('[role="checkbox"][aria-checked="true"]')
@@ -495,7 +950,7 @@ class PlaywrightBrowser:
             if selected.count() > 0:
                 verified = True
                 break
-            self.page.wait_for_timeout(150)
+            self._wait_for_timeout(150)
         self._log_selection(
             kind="media",
             selector=getattr(self, "last_locator_selector", "SINGLE_MEDIA_SELECTORS"),
@@ -516,8 +971,19 @@ class PlaywrightBrowser:
                 return locator
         raise CleanerError("Google Photos layout not recognized; no media items found")
 
-    def select_visible_batch(self, batch_size: int) -> Sequence[str]:
-        self.page.wait_for_selector(self.MEDIA_SELECTORS[0], timeout=30000)
+    def select_visible_batch(
+        self,
+        batch_size: int,
+        *,
+        excluded_media_ids: Sequence[str] = (),
+    ) -> Sequence[str]:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be greater than zero")
+        excluded_ids = set(excluded_media_ids)
+        if self._is_trash_route():
+            raise CleanerError("Refusing to select media from the Google Photos Trash route")
+        self.last_batch_ids = []
+        self._wait_for_selector(self.MEDIA_SELECTORS[0])
         self.wait_for_current_timeline()
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
@@ -531,12 +997,22 @@ class PlaywrightBrowser:
         )
         preselected_count = selected.count()
         if preselected_count:
+            # A selection overlay can survive a post-Trash reload while its
+            # virtualized nodes are being replaced. Re-read once after the
+            # bounded settle delay and only preserve a stable selection.
+            self._wait_for_timeout(750)
+            settled_selected = self.page.locator(
+                '[role="checkbox"][aria-checked="true"][aria-label*=" - "]'
+            )
+            settled_count = settled_selected.count()
+            if settled_count != preselected_count:
+                self.last_batch_ids = []
+                self.last_selection_kind = None
+                raise CleanerError("Existing selection changed; refusing trash action")
+            self.last_batch_ids = [f"already-selected-{index + 1}" for index in range(settled_count)]
             # Preserve user/manual selection rather than attempting another tile
             # click over an open Google Photos selection overlay.
-            self.page.wait_for_timeout(750)
-            if selected.count() != preselected_count:
-                raise CleanerError("Existing selection changed; refusing trash action")
-            return [f"already-selected-{index + 1}" for index in range(preselected_count)]
+            return [f"already-selected-{index + 1}" for index in range(settled_count)]
         locator = self._media_locator()
         ids: list[str] = []
         seen_ids: set[str] = set()
@@ -561,7 +1037,7 @@ class PlaywrightBrowser:
                 candidate_id = candidate.get_attribute("data-media-key") or candidate.get_attribute("data-id")
                 if not candidate_id:
                     candidate_id = f"visible-index-{len(ids)}-{index}"
-                if candidate_id in seen_ids:
+                if candidate_id in seen_ids or candidate_id in excluded_ids:
                     continue
                 item = candidate
                 media_id = candidate_id
@@ -573,8 +1049,9 @@ class PlaywrightBrowser:
                 continue
             selected_before = selected.count()
             aria_before = item.get_attribute("aria-checked")
+            self._reactivate_hover_for_control(item)
             self._click_control(item)
-            self.page.wait_for_timeout(150)
+            self._wait_for_timeout(150)
             selected_after = selected.count()
             aria_after = item.get_attribute("aria-checked")
             if getattr(self, "diagnostic", None) is not None:
@@ -600,9 +1077,10 @@ class PlaywrightBrowser:
             ids.append(media_id)
             empty_scrolls = 0
         # Let Google Photos settle final selection toolbar before Trash click.
-        self.page.wait_for_timeout(750)
+        self._wait_for_timeout(750)
         if selected.count() != len(ids):
             raise CleanerError("Selection count is inconsistent; refusing trash action")
+        self.last_batch_ids = ids
         return ids
 
     def target_exists(self, label: str) -> bool:
@@ -703,6 +1181,7 @@ class PlaywrightBrowser:
                 if moved_count is None:
                     continue
                 self.last_feedback_source = "browser_positive_feedback"
+                self.last_feedback_count = moved_count
                 if getattr(self, "diagnostic", None) is not None:
                     self.diagnostic.event(
                         "trash_feedback_popup",
@@ -718,6 +1197,7 @@ class PlaywrightBrowser:
     def _trash_feedback_visible(self) -> bool:
         """Require visible Google Photos Trash feedback, parsing popup count."""
         self.last_feedback_source = None
+        self.last_feedback_count = None
         if self._observe_trash_feedback_live_regions():
             return True
         legacy_feedback = (
@@ -799,6 +1279,7 @@ class PlaywrightBrowser:
                         continue
                     moved_count = self._moved_count_from_popup_match(match)
                     self.last_feedback_source = "browser_positive_feedback"
+                    self.last_feedback_count = moved_count
                     if getattr(self, "diagnostic", None) is not None:
                         self.diagnostic.event(
                             "trash_feedback_popup",
@@ -839,6 +1320,7 @@ class PlaywrightBrowser:
             while time.monotonic() < deadline:
                 checks += 1
                 feedback = self._trash_feedback_visible()
+                positive_source = self.last_feedback_source if feedback else None
                 if getattr(self, "diagnostic", None) is not None:
                     self.diagnostic.event(
                         "trash_reconcile_check",
@@ -848,11 +1330,11 @@ class PlaywrightBrowser:
                         target_count=self._target_count(label),
                         final=bool(feedback),
                         positive_feedback=feedback,
-                        feedback_source=self.last_feedback_source if feedback else None,
+                        feedback_source=positive_source,
                     )
                 if feedback:
                     return True
-                self.page.wait_for_timeout(500)
+                self._wait_for_timeout(500)
             feedback = self._trash_feedback_visible()
             if getattr(self, "diagnostic", None) is not None:
                 self.diagnostic.event(
@@ -958,7 +1440,7 @@ class PlaywrightBrowser:
                             remaining_ms=max(0, timeout_ms - round((time.perf_counter() - started_perf) * 1000)),
                         )
                     return True
-                self.page.wait_for_timeout(250)
+                self._wait_for_timeout(250)
             feedback = self._trash_feedback_visible()
         except Exception as exc:
             self.last_feedback_source = None
@@ -995,8 +1477,8 @@ class PlaywrightBrowser:
         trash_names = (
             "Move to trash",
             "Sposta nel cestino",
-            "Elimina",
-            "Delete",
+            "Move to bin",
+            "Sposta nel Cestino",
         )
         trash = None
         button_counts = {}
@@ -1046,15 +1528,55 @@ class PlaywrightBrowser:
                 confirmation_required=None,
                 result="started",
             )
-        trash.click()
+        self._click_control(trash)
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "trash_click_completed",
                 selected_before=selected_before,
                 result="clicked",
             )
+        # Google Photos may expose a confirmation dialog only after the first
+        # click. Give the dialog a bounded settle window before interpreting the
+        # still-selected virtualized tiles as an ambiguous result.
+        dialog = self.page.get_by_role("dialog")
+        dialog_count = 0
+        for _ in range(8):
+            dialog_count = dialog.count()
+            if dialog_count > 0:
+                break
+            self._wait_for_timeout(250)
+        if dialog_count > 0:
+            confirmation = None
+            for name in trash_names:
+                candidate = dialog.get_by_role("button", name=name, exact=True)
+                confirmation = self._visible_first(candidate) if candidate.count() else None
+                if confirmation is not None:
+                    break
+            if confirmation is None:
+                raise CleanerError("Delete confirmation button not found")
+            self._click_control(confirmation)
+            self._wait_for_timeout(1000)
+            selected_after = selected.count()
+            feedback = self._wait_for_trash_feedback()
+            if getattr(self, "diagnostic", None) is not None:
+                self.diagnostic.event(
+                    "trash_confirmation_completed",
+                    selected_after=selected_after,
+                    positive_feedback=feedback,
+                    feedback_source=self.last_feedback_source,
+                    result="confirmed" if feedback else "ambiguous",
+                )
+            if selected_after > 0:
+                return False
+            if not feedback:
+                return False
+            feedback_count = getattr(self, "last_feedback_count", None)
+            if feedback_count is not None and feedback_count != selected_before:
+                raise CleanerError("Trash feedback quantity is inconsistent; result is ambiguous")
+            self.refresh_after_trash()
+            return True
         for _ in range(10):
-            self.page.wait_for_timeout(250)
+            self._wait_for_timeout(250)
             if selected_before > 0 and selected.count() == 0:
                 # Virtualized DOM can drop selected nodes during a refresh. Only
                 # confirm success when Google Photos also exposes positive feedback.
@@ -1067,21 +1589,24 @@ class PlaywrightBrowser:
                         feedback_source=self.last_feedback_source,
                         result="confirmed" if feedback else "ambiguous",
                     )
+                if feedback:
+                    feedback_count = getattr(self, "last_feedback_count", None)
+                    if feedback_count is not None and feedback_count != selected_before:
+                        raise CleanerError("Trash feedback quantity is inconsistent; result is ambiguous")
+                    self.refresh_after_trash()
                 return feedback
 
-        dialog = self.page.get_by_role("dialog")
+        # No dialog appeared in the bounded window. The first click has already
+        # happened, so return pending and let the caller reconcile; never click
+        # the destructive control a second time based on stale virtualized DOM.
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "trash_dialog_detected",
-                dialog_count=dialog.count(),
+                dialog_count=dialog_count,
                 selected_count=selected.count(),
-                result="dialog" if dialog.count() else "no_dialog",
+                result="dialog" if dialog_count else "no_dialog",
             )
-        if dialog.count() == 0:
-            # Google Photos commonly completes this action without a dialog while
-            # retaining a stale selected checkbox during its virtual-DOM update.
-            # The click has already occurred exactly once; treat the action as
-            # pending so Cleaner journals/reconciles it before any future click.
+        if dialog_count == 0:
             return False
         confirmation = None
         for name in trash_names:
@@ -1091,8 +1616,8 @@ class PlaywrightBrowser:
                 break
         if confirmation is None:
             raise CleanerError("Delete confirmation button not found")
-        confirmation.click()
-        self.page.wait_for_timeout(1000)
+        self._click_control(confirmation)
+        self._wait_for_timeout(1000)
         selected_after = selected.count()
         feedback = self._wait_for_trash_feedback()
         if getattr(self, "diagnostic", None) is not None:
@@ -1105,27 +1630,36 @@ class PlaywrightBrowser:
             )
         if selected_after > 0:
             return False
-        return feedback
+        if not feedback:
+            return False
+        feedback_count = getattr(self, "last_feedback_count", None)
+        if feedback_count is not None and feedback_count != selected_before:
+            raise CleanerError("Trash feedback quantity is inconsistent; result is ambiguous")
+        self.refresh_after_trash()
+        return True
 
     def move_selected_to_trash(self, media_ids: Sequence[str]) -> None:
+        if self._is_trash_route():
+            raise CleanerError("Refusing Trash action on the Google Photos Trash route")
         if not media_ids:
             raise CleanerError("Refusing to trash an empty selection")
 
         button_counts = {}
         visible_button_counts = {}
-        trash = self.page.get_by_role("button", name="Move to trash")
-        button_counts["Move to trash"] = trash.count()
-        visible_trash = self._visible_first(trash) if button_counts["Move to trash"] else None
-        visible_button_counts["Move to trash"] = 1 if visible_trash is not None else 0
-        if visible_trash is not None:
-            trash = visible_trash
-        else:
-            trash = self.page.get_by_role("button", name="Sposta nel cestino")
-            button_counts["Sposta nel cestino"] = trash.count()
-            visible_trash = self._visible_first(trash) if button_counts["Sposta nel cestino"] else None
-            visible_button_counts["Sposta nel cestino"] = 1 if visible_trash is not None else 0
-            if visible_trash is not None:
-                trash = visible_trash
+        trash = None
+        visible_trash = None
+        for name in ("Move to trash", "Sposta nel cestino", "Move to bin", "Sposta nel Cestino"):
+            try:
+                candidate = self.page.get_by_role("button", name=name, exact=True)
+            except StopIteration:
+                break
+            button_counts[name] = candidate.count()
+            visible_candidate = self._visible_first(candidate) if button_counts[name] else None
+            visible_button_counts[name] = 1 if visible_candidate is not None else 0
+            if visible_candidate is not None:
+                trash = candidate
+                visible_trash = visible_candidate
+                break
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "trash_batch_click_started",
@@ -1136,19 +1670,22 @@ class PlaywrightBrowser:
             )
         if visible_trash is None:
             raise CleanerError("Trash action not found visibly; refusing blind click")
-        trash.click()
+        self._click_control(visible_trash)
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event("trash_batch_click_completed", result="clicked")
-        self.page.wait_for_timeout(500)
-        confirmation = self.page.get_by_role(
-            "button", name="Move to trash"
-        )
-        if confirmation.count() == 0:
-            confirmation = self.page.get_by_role(
-                "button", name="Sposta nel cestino"
-            )
-        confirmation_count = confirmation.count()
-        visible_confirmation = self._visible_first(confirmation) if confirmation_count else None
+        self._wait_for_timeout(500)
+        confirmation = None
+        for name in ("Move to trash", "Sposta nel cestino", "Move to bin", "Sposta nel Cestino"):
+            try:
+                candidate = self.page.get_by_role("button", name=name, exact=True)
+            except StopIteration:
+                break
+            visible_candidate = self._visible_first(candidate) if candidate.count() else None
+            if visible_candidate is not None:
+                confirmation = visible_candidate
+                break
+        confirmation_count = 1 if confirmation is not None else 0
+        visible_confirmation = confirmation
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
                 "trash_batch_dialog_detected",
@@ -1158,8 +1695,8 @@ class PlaywrightBrowser:
             )
         if visible_confirmation is None:
             raise CleanerError("Visible Trash confirmation not found; result is ambiguous")
-        visible_confirmation.click()
-        self.page.wait_for_timeout(1000)
+        self._click_control(visible_confirmation)
+        self._wait_for_timeout(1000)
         feedback = self._wait_for_trash_feedback()
         if getattr(self, "diagnostic", None) is not None:
             self.diagnostic.event(
@@ -1170,28 +1707,15 @@ class PlaywrightBrowser:
             )
         if not feedback:
             raise CleanerError("Trash completion feedback not found; result is ambiguous")
+        feedback_count = getattr(self, "last_feedback_count", None)
+        if feedback_count is not None and feedback_count != len(media_ids):
+            raise CleanerError("Trash feedback quantity is inconsistent; result is ambiguous")
+        self.refresh_after_trash()
 
     def recover(self) -> None:
         """Dismiss transient overlays without reloading or resetting timeline."""
-        self._dismiss_transient_dialogs()
-        self.page.wait_for_timeout(500)
-
-    def _dismiss_transient_dialogs(self) -> None:
-        for name in (
-            "Got it",
-            "OK",
-            "Chiudi",
-            "Close",
-        ):
-            button = self.page.get_by_role("button", name=name)
-            try:
-                present = button.count() > 0
-                visible = present and button.first.is_visible()
-            except (TypeError, AttributeError):
-                present = False
-                visible = False
-            if present and visible:
-                button.first.click()
+        self._dismiss_known_overlays()
+        self._wait_for_timeout(500)
 
     def capture_diagnostics(self, directory: Path, reason: str) -> dict[str, Path]:
         directory.mkdir(parents=True, exist_ok=True)

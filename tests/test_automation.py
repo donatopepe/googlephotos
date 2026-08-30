@@ -1,9 +1,22 @@
+import os
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
+from unittest.mock import Mock
 
 from googlephotos_cleaner.automation import Cleaner, CleanerError, DestructiveActionAmbiguous, PassOutcome
 from googlephotos_cleaner.diagnostics import CheckpointStore, DiagnosticLog, PendingActionStore
+
+
+def _test_pending() -> PendingActionStore:
+    fd, raw_path = tempfile.mkstemp(prefix="googlephotos-test-pending-", suffix=".json")
+    os.close(fd)
+    path = Path(raw_path)
+    path.unlink()
+    store = PendingActionStore(path)
+    store._test_cleanup = weakref.finalize(store, path.unlink, missing_ok=True)
+    return store
 
 
 class FakeBrowser:
@@ -19,10 +32,11 @@ class FakeBrowser:
         if not self.authenticated:
             raise CleanerError("Google Photos session is not authenticated")
 
-    def select_visible_batch(self, batch_size):
+    def select_visible_batch(self, batch_size, *, excluded_media_ids=()):
         if not self.batches:
             return []
-        return self.batches.pop(0)[:batch_size]
+        excluded = set(excluded_media_ids)
+        return [media_id for media_id in self.batches.pop(0) if media_id not in excluded][:batch_size]
 
     def select_current_day(self):
         if not self.batches:
@@ -58,11 +72,11 @@ class RecoverableBrowser(FakeBrowser):
         self.recover_calls = 0
         self.scan_calls = 0
 
-    def select_visible_batch(self, batch_size):
+    def select_visible_batch(self, batch_size, *, excluded_media_ids=()):
         self.scan_calls += 1
         if self.scan_calls == 1:
             raise TimeoutError("temporary timeout")
-        return super().select_visible_batch(batch_size)
+        return super().select_visible_batch(batch_size, excluded_media_ids=excluded_media_ids)
 
     def recover(self):
         self.recover_calls += 1
@@ -120,6 +134,113 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertEqual(selected, ["old-1", "old-2"])
         self.assertEqual(browser.trashed, [["old-1", "old-2"]])
 
+    def test_cleaner_default_is_non_destructive(self):
+        browser = FakeBrowser([["photo-1"]])
+
+        processed = Cleaner(browser, day_mode=False, max_batches=1).run()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(browser.trashed, [])
+        self.assertEqual(Cleaner(browser, dry_run=True).last_outcome, PassOutcome.CONTINUE)
+
+    def test_cleaner_default_day_mode_is_non_destructive(self):
+        browser = FakeBrowser([["day-1"]])
+
+        processed = Cleaner(browser, day_mode=True, max_batches=1).run()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(browser.trashed, [])
+
+    def test_cleaner_requires_execute_and_confirmation_for_trash(self):
+        browser = FakeBrowser([["photo-1"]])
+
+        with self.assertRaises(CleanerError):
+            Cleaner(
+                browser, pending=_test_pending(),
+                day_mode=False,
+                dry_run=False,
+                execute=True,
+                confirm_all_media_to_trash=False,
+            )
+
+        with self.assertRaises(CleanerError):
+            Cleaner(
+                browser, pending=_test_pending(),
+                day_mode=False,
+                dry_run=False,
+                execute=False,
+                confirm_all_media_to_trash=True,
+            )
+
+    def test_pending_is_saved_before_destructive_browser_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+
+            class PendingAwareBrowser(FakeBrowser):
+                def move_selected_to_trash(self, media_ids):
+                    self.pending_seen_before_click = pending.load()
+                    super().move_selected_to_trash(media_ids)
+
+            browser = PendingAwareBrowser([["photo-1"]])
+            Cleaner(
+                browser,
+                day_mode=False,
+                pending=pending,
+                execute=True,
+                confirm_all_media_to_trash=True,
+                max_batches=1,
+            ).run()
+
+            self.assertIsNotNone(browser.pending_seen_before_click)
+            self.assertEqual(browser.pending_seen_before_click["kind"], "media_batch")
+
+    def test_cleaner_explicit_authorization_allows_trash(self):
+        browser = FakeBrowser([["photo-1"]])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            processed = Cleaner(
+                browser,
+                day_mode=False,
+                dry_run=False,
+                execute=True,
+                confirm_all_media_to_trash=True,
+                pending=pending,
+                max_batches=1,
+            ).run()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(browser.trashed, [["photo-1"]])
+
+    def test_cleaner_requires_durable_pending_store_for_destructive_mode(self):
+        with self.assertRaises(CleanerError):
+            Cleaner(
+                FakeBrowser([["photo-1"]]),
+                day_mode=False,
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+
+
+    def test_malformed_pending_store_blocks_destructive_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.path.write_text("not-json", encoding="utf-8")
+            browser = FakeBrowser([["photo-1"]])
+
+            cleaner = Cleaner(
+                browser,
+                day_mode=False,
+                execute=True,
+                confirm_all_media_to_trash=True,
+                pending=pending,
+            )
+
+            self.assertEqual(cleaner.run(), 0)
+            self.assertEqual(cleaner.last_outcome, PassOutcome.PENDING_UNRESOLVED)
+            self.assertEqual(browser.trashed, [])
+            self.assertTrue(pending.path.exists())
+
     def test_cleaner_does_not_retry_authentication(self):
         browser = FakeBrowser([])
         browser.authenticated = False
@@ -127,6 +248,29 @@ class BrowserAdapterTests(unittest.TestCase):
 
         with self.assertRaises(CleanerError):
             Cleaner(browser, max_retries=4).run()
+
+    def test_pending_checkpoint_is_discarded_by_inspect_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            checkpoint.save(batch=1, photos=2, state="pending", reason="reconciliation_unresolved", run_id="same-run")
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="same-run")
+            browser = FakeBrowser([])
+            cleaner = Cleaner(
+                browser,
+                checkpoint=checkpoint,
+                pending=pending,
+                diagnostic=diagnostic,
+                pending_policy="inspect",
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+
+            self.assertEqual(cleaner.run(), 0)
+            self.assertNotEqual(__import__("json").loads(checkpoint.path.read_text())["state"], "pending")
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            discarded = next(event for event in events if event["phase"] == "checkpoint_pending_discarded_after_timeout")
+            self.assertEqual(discarded["result"], "discarded_without_reconciliation")
 
     def test_running_checkpoint_is_marked_stale_when_run_identity_is_not_current(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,9 +285,58 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(stale["reason"], "run_identity_mismatch")
             self.assertFalse(stale["resumable"])
 
+    def test_stale_running_checkpoint_is_discarded_explicitly_without_browser_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            checkpoint.save(batch=2, photos=3, state="running", reason="day_processed", run_id="different-run")
+            diagnostic = DiagnosticLog(Path(tmp, "run.jsonl"), run_id="current-run")
+            browser = FakeBrowser([[]])
+            cleaner = Cleaner(
+                browser,
+                day_mode=False,
+                checkpoint=checkpoint,
+                pending=PendingActionStore(Path(tmp) / "pending.json"),
+                diagnostic=diagnostic,
+                pending_policy="discard",
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+
+            self.assertEqual(cleaner.run(), 0)
+            self.assertEqual(cleaner.last_outcome.value, "pass_done")
+            self.assertNotEqual(__import__("json").loads(checkpoint.path.read_text())["state"], "stale")
+            self.assertEqual(browser.trashed, [])
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            discarded = next(event for event in events if event["phase"] == "checkpoint_discarded_manual")
+            self.assertEqual(discarded["state"], "stale")
+            self.assertEqual(discarded["result"], "discarded_without_reconciliation")
+
+    def test_ambiguous_checkpoint_blocks_without_repeating_trash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            checkpoint.save(
+                batch=1,
+                photos=2,
+                state="ambiguous",
+                reason="trash_result_unknown",
+                run_id="same-run",
+            )
+            diagnostic = DiagnosticLog(Path(tmp, "run.jsonl"), run_id="same-run")
+            browser = FakeBrowser([["photo-1"]])
+            cleaner = Cleaner(browser, day_mode=False, checkpoint=checkpoint, diagnostic=diagnostic)
+
+            self.assertEqual(cleaner.run(), 0)
+            self.assertEqual(cleaner.last_outcome, PassOutcome.DESTRUCTIVE_AMBIGUOUS)
+            self.assertTrue(cleaner.stop_requested)
+            self.assertEqual(browser.trashed, [])
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            blocked = next(event for event in events if event["phase"] == "checkpoint_unresolved")
+            self.assertEqual(blocked["state"], "ambiguous")
+            self.assertFalse(any(event["phase"] == "authenticated" for event in events))
+
     def test_scan_failure_saves_terminal_checkpoint_context(self):
         class FailedBrowser(FakeBrowser):
-            def select_visible_batch(self, batch_size):
+            def select_visible_batch(self, batch_size, *, excluded_media_ids=()):
                 raise TimeoutError("scan timeout")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -186,6 +379,8 @@ class BrowserAdapterTests(unittest.TestCase):
                     pending=pending,
                     checkpoint=checkpoint,
                     max_batches=1,
+                    execute=True,
+                    confirm_all_media_to_trash=True,
                 ).run()
 
             self.assertIsNotNone(pending.load())
@@ -200,7 +395,7 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-source-required")
             with self.assertRaises(DestructiveActionAmbiguous):
-                Cleaner(browser, day_mode=True, diagnostic=diagnostic, max_batches=1).run()
+                Cleaner(browser, pending=_test_pending(), day_mode=True, diagnostic=diagnostic, max_batches=1, execute=True, confirm_all_media_to_trash=True).run()
             import json
             events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
 
@@ -215,7 +410,7 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-source-null")
             with self.assertRaises(DestructiveActionAmbiguous):
-                Cleaner(browser, day_mode=True, diagnostic=diagnostic, max_batches=1).run()
+                Cleaner(browser, pending=_test_pending(), day_mode=True, diagnostic=diagnostic, max_batches=1, execute=True, confirm_all_media_to_trash=True).run()
 
     def test_day_completion_event_contains_observer_feedback_source(self):
         class DayBrowser(FakeBrowser):
@@ -225,7 +420,7 @@ class BrowserAdapterTests(unittest.TestCase):
         browser = DayBrowser([("2 Aug", 1)])
         with tempfile.TemporaryDirectory() as tmp:
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-source")
-            Cleaner(browser, day_mode=True, diagnostic=diagnostic, max_batches=1).run()
+            Cleaner(browser, pending=_test_pending(), day_mode=True, diagnostic=diagnostic, max_batches=1, execute=True, confirm_all_media_to_trash=True).run()
             import json
             events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
 
@@ -240,7 +435,7 @@ class BrowserAdapterTests(unittest.TestCase):
         browser = MediaBrowser([["old-1"]])
         with tempfile.TemporaryDirectory() as tmp:
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-source")
-            Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
+            Cleaner(browser, pending=_test_pending(), day_mode=False, diagnostic=diagnostic, max_batches=1, execute=True, confirm_all_media_to_trash=True).run()
             import json
             events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
 
@@ -264,6 +459,8 @@ class BrowserAdapterTests(unittest.TestCase):
                     pending=pending,
                     checkpoint=checkpoint,
                     max_batches=1,
+                    execute=True,
+                    confirm_all_media_to_trash=True,
                 ).run()
 
             self.assertIsNotNone(pending.load())
@@ -278,7 +475,7 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-source-required")
             with self.assertRaises(DestructiveActionAmbiguous):
-                Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
+                Cleaner(browser, pending=_test_pending(), day_mode=False, diagnostic=diagnostic, max_batches=1, execute=True, confirm_all_media_to_trash=True).run()
             import json
             events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
 
@@ -293,13 +490,13 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-source-null")
             with self.assertRaises(DestructiveActionAmbiguous):
-                Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
+                Cleaner(browser, pending=_test_pending(), day_mode=False, diagnostic=diagnostic, max_batches=1, execute=True, confirm_all_media_to_trash=True).run()
 
     def test_trash_completion_event_contains_positive_feedback(self):
         browser = FakeBrowser([["old-1"]])
         with tempfile.TemporaryDirectory() as tmp:
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="trash-proof")
-            Cleaner(browser, day_mode=False, diagnostic=diagnostic, max_batches=1).run()
+            Cleaner(browser, pending=_test_pending(), day_mode=False, diagnostic=diagnostic, max_batches=1, execute=True, confirm_all_media_to_trash=True).run()
             import json
             events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
 
@@ -313,7 +510,7 @@ class BrowserAdapterTests(unittest.TestCase):
             pending = PendingActionStore(Path(tmp) / "pending.json")
             pending.save(label="day pending", kind="day", scroll_top=0)
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-evidence-contract")
-            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="inspect").run()
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="inspect", execute=True, confirm_all_media_to_trash=True).run()
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
             phases = {"pending_loaded", "pending_reconciliation_skipped", "pending_inspected", "cleaner_terminal_state"}
             for event in events:
@@ -362,7 +559,7 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="destructive-ambiguous-evidence")
-            cleaner = Cleaner(AmbiguousDayBrowser([("2 Aug", 1)]), pending=pending, diagnostic=diagnostic, max_batches=1)
+            cleaner = Cleaner(AmbiguousDayBrowser([("2 Aug", 1)]), execute=True, confirm_all_media_to_trash=True, pending=pending, diagnostic=diagnostic, max_batches=1)
             with self.assertRaises(DestructiveActionAmbiguous):
                 cleaner.run()
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
@@ -379,7 +576,7 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="destructive-pending-evidence")
-            cleaner = Cleaner(PendingDayBrowser([("2 Aug", 1)]), pending=pending, diagnostic=diagnostic, max_batches=1)
+            cleaner = Cleaner(PendingDayBrowser([("2 Aug", 1)]), execute=True, confirm_all_media_to_trash=True, pending=pending, diagnostic=diagnostic, max_batches=1)
             cleaner.run()
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
             event = next(event for event in events if event["phase"] == "destructive_action_pending")
@@ -414,13 +611,313 @@ class BrowserAdapterTests(unittest.TestCase):
             pending = PendingActionStore(Path(tmp) / "pending.json")
             pending.save(label="day pending", kind="day", scroll_top=0)
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-inspect-evidence")
-            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="inspect").run()
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="inspect", execute=True, confirm_all_media_to_trash=True).run()
 
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
             inspected = next(event for event in events if event["phase"] == "pending_inspected")
             self.assertFalse(inspected["positive_feedback"])
             self.assertIsNone(inspected["feedback_source"])
-            self.assertEqual(inspected["result"], "policy_blocked")
+            self.assertEqual(inspected["result"], "reconciliation_attempted")
+
+    def test_pending_inspect_timeout_does_not_replay_same_day_target(self):
+        class TimeoutPendingBrowser(FakeBrowser):
+            last_feedback_source = None
+
+            def wait_for_target_absence(self, _label, timeout_ms):
+                self.waited_timeout_ms = timeout_ms
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-no-replay")
+            browser = TimeoutPendingBrowser([("day pending", 1), ("next day", 1)])
+            cleaner = Cleaner(
+                browser,
+                pending=pending,
+                diagnostic=diagnostic,
+                pending_policy="inspect",
+                pending_timeout_ms=777,
+                max_batches=1,
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+
+            with self.assertRaises(DestructiveActionAmbiguous):
+                cleaner.run()
+            self.assertEqual(browser.days, ["day pending", "next day"])
+            self.assertEqual(browser.trashed, [["day"]])
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            self.assertTrue(any(event["phase"] == "ambiguous_target_skipped" for event in events))
+
+    def test_ambiguous_target_requests_one_bounded_timeline_advance(self):
+        class StaleTargetBrowser(FakeBrowser):
+            last_feedback_source = "browser_positive_feedback"
+
+            def __init__(self):
+                super().__init__(["stale-day", "next-day"])
+                self.advance_calls = 0
+
+            def select_current_day(self):
+                day = self.batches.pop(0)
+                self.days.append(day)
+                return day
+
+            def advance_timeline(self):
+                self.advance_calls += 1
+                return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            browser = StaleTargetBrowser()
+            cleaner = Cleaner(
+                browser,
+                pending=pending,
+                max_batches=1,
+                pending_policy="inspect",
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+            cleaner._skipped_ambiguous_targets.add("stale-day")
+
+            self.assertEqual(cleaner.run(), 1)
+            self.assertEqual(browser.advance_calls, 1)
+            self.assertEqual(browser.days, ["stale-day", "next-day"])
+            self.assertEqual(browser.trashed, [["day"]])
+
+    def test_pending_discard_policy_removes_pending_and_checkpoint_without_browser_reconciliation(self):
+        class NoReconciliationBrowser(FakeBrowser):
+            def wait_for_target_absence(self, *_args, **_kwargs):
+                raise AssertionError("discard policy must not reconcile in browser")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="ambiguous day", kind="day", scroll_top=0)
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            checkpoint.save(batch=1, photos=2, state="pending", reason="trash_result_pending")
+            browser = NoReconciliationBrowser([])
+            cleaner = Cleaner(
+                browser,
+                pending=pending,
+                checkpoint=checkpoint,
+                pending_policy="discard",
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+            cleaner.reconcile_pending_only = True
+
+            self.assertEqual(cleaner.run(), 0)
+            self.assertEqual(cleaner.last_outcome, PassOutcome.PASS_DONE)
+            self.assertIsNone(pending.load())
+            self.assertIsNone(checkpoint.load())
+            self.assertEqual(browser.trashed, [])
+
+    def test_pending_inspect_timeout_discards_journal_and_continues_scan(self):
+        class TimeoutPendingBrowser(FakeBrowser):
+            last_feedback_source = None
+
+            def wait_for_target_absence(self, _label, timeout_ms):
+                self.waited_timeout_ms = timeout_ms
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-timeout-discard")
+            browser = TimeoutPendingBrowser([("next day", 1)])
+            browser.last_feedback_source = "browser_positive_feedback"
+            cleaner = Cleaner(
+                browser,
+                pending=pending,
+                diagnostic=diagnostic,
+                pending_policy="inspect",
+                pending_timeout_ms=777,
+                max_batches=1,
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+
+            self.assertEqual(cleaner.run(), 1)
+            self.assertIsNone(pending.load())
+            self.assertEqual(browser.waited_timeout_ms, 777)
+            self.assertEqual(browser.trashed, [["day"]])
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            discarded = next(event for event in events if event["phase"] == "pending_discarded_after_timeout")
+            self.assertEqual(discarded["target"], "day pending")
+            self.assertEqual(discarded["result"], "discarded_without_reconciliation")
+            self.assertFalse(discarded["positive_feedback"])
+            self.assertFalse(any(event["phase"] == "pending_unresolved" for event in events))
+
+    def test_pending_timeout_on_media_action_discards_journal_and_continues_scan(self):
+        class TimeoutMediaBrowser(FakeBrowser):
+            last_feedback_source = "browser_positive_feedback"
+
+            def move_selected_to_trash(self, media_ids):
+                self.trashed.append(list(media_ids))
+                raise TimeoutError("feedback timeout")
+
+            def wait_for_target_absence(self, _label, timeout_ms):
+                self.waited_timeout_ms = timeout_ms
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-timeout-discard")
+            browser = TimeoutMediaBrowser([["first media"], ["second media"]])
+            cleaner = Cleaner(
+                browser,
+                pending=pending,
+                diagnostic=diagnostic,
+                pending_policy="inspect",
+                pending_timeout_ms=444,
+                max_batches=2,
+                day_mode=False,
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+
+            # Ambiguous media action itself remains fail-closed: only the
+            # journal is discarded after the bounded timeout; no Trash retry.
+            self.assertEqual(cleaner.run(), 0)
+            self.assertIsNone(pending.load())
+            self.assertEqual(browser.waited_timeout_ms, 444)
+            self.assertEqual(browser.trashed, [["first media"], ["second media"]])
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            self.assertTrue(any(event["phase"] == "pending_discarded_after_timeout" for event in events))
+
+    def test_day_mode_fallback_passes_batch_limit_and_ambiguous_ids_to_adapter(self):
+        class DayFallbackBrowser(FakeBrowser):
+            def __init__(self):
+                super().__init__([["media-1", "media-2", "media-3"]])
+                self.last_selection_kind = "media"
+                self.last_batch_ids = []
+                self.select_current_day_calls = []
+
+            def select_current_day(self, *, batch_size=None, excluded_media_ids=()):
+                self.select_current_day_calls.append((batch_size, set(excluded_media_ids)))
+                excluded = set(excluded_media_ids)
+                selected = [media_id for media_id in self.batches.pop(0) if media_id not in excluded][:batch_size]
+                self.last_batch_ids = list(selected)
+                if not selected:
+                    self.last_selection_kind = None
+                    return None
+                self.last_selection_kind = "media"
+                return f"batch:{len(selected)}"
+
+            def delete_selected_day(self):
+                self.trashed.append(list(self.last_batch_ids))
+                raise TimeoutError("feedback timeout")
+
+            def wait_for_target_absence(self, _label, timeout_ms):
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-fallback-limit")
+            browser = DayFallbackBrowser()
+            cleaner = Cleaner(
+                browser,
+                pending=pending,
+                diagnostic=diagnostic,
+                pending_policy="inspect",
+                pending_timeout_ms=100,
+                max_batches=1,
+                day_mode=True,
+                batch_size=2,
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+            # Seed the replay tombstone as if the same batch had already ended
+            # ambiguously in an earlier bounded attempt.
+            cleaner._skipped_ambiguous_media_ids.add("media-1")
+
+            self.assertEqual(cleaner.run(), 0)
+            self.assertEqual(browser.select_current_day_calls, [(2, {"media-1"})])
+            self.assertEqual(browser.trashed, [["media-2", "media-3"]])
+            self.assertEqual(browser.last_batch_ids, ["media-2", "media-3"])
+            record = pending.load()
+            self.assertIsNotNone(record)
+            self.assertEqual(record["kind"], "media_batch")
+            self.assertEqual(record["count"], 2)
+            self.assertEqual(record["media_ids"], ["media-2", "media-3"])
+
+    def test_ambiguous_media_batch_ids_are_not_selected_again(self):
+        class ReplayAwareBrowser(FakeBrowser):
+            def __init__(self):
+                super().__init__([["media-1", "media-2"], ["media-1", "media-2"]])
+                self.last_batch_ids = []
+                self.select_calls = []
+                self.excluded_calls = []
+
+            def select_visible_batch(self, batch_size, *, excluded_media_ids=()):
+                batch = super().select_visible_batch(batch_size)
+                batch = [media_id for media_id in batch if media_id not in set(excluded_media_ids)]
+                self.last_batch_ids = list(batch)
+                self.select_calls.append(list(batch))
+                self.excluded_calls.append(set(excluded_media_ids))
+                return batch
+
+            def move_selected_to_trash(self, media_ids):
+                self.trashed.append(list(media_ids))
+                raise TimeoutError("feedback timeout")
+
+            def wait_for_target_absence(self, _label, timeout_ms):
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            browser = ReplayAwareBrowser()
+            cleaner = Cleaner(
+                browser,
+                pending=pending,
+                pending_policy="inspect",
+                max_batches=2,
+                day_mode=False,
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+
+            self.assertEqual(cleaner.run(), 0)
+            self.assertEqual(browser.select_calls, [["media-1", "media-2"], []])
+            self.assertEqual(browser.trashed, [["media-1", "media-2"]])
+
+    def test_pending_timeout_on_day_action_discards_journal_and_continues_scan(self):
+        class TimeoutDayBrowser(FakeBrowser):
+            last_feedback_source = "browser_positive_feedback"
+
+            def delete_selected_day(self):
+                self.trashed.append(["day"])
+                return False
+
+            def wait_for_target_absence(self, _label, timeout_ms):
+                self.waited_timeout_ms = timeout_ms
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="day-timeout-discard")
+            browser = TimeoutDayBrowser([("first day", 1), ("second day", 1)])
+            cleaner = Cleaner(
+                browser,
+                pending=pending,
+                diagnostic=diagnostic,
+                pending_policy="inspect",
+                pending_timeout_ms=555,
+                max_batches=2,
+                execute=True,
+                confirm_all_media_to_trash=True,
+                max_idle_scrolls=1,
+            )
+
+            # Neither uncertain action is counted as confirmed, but the pass
+            # continues to the next visible day after each journal discard.
+            self.assertEqual(cleaner.run(), 0)
+            self.assertIsNone(pending.load())
+            self.assertEqual(browser.waited_timeout_ms, 555)
+            self.assertEqual(browser.trashed, [["day"], ["day"]])
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            self.assertEqual(len([event for event in events if event["phase"] == "pending_discarded_after_timeout"]), 2)
+            self.assertFalse(any(event["phase"] == "cleaner_terminal_state" for event in events))
 
     def test_cleaner_terminal_destructive_outcome_declares_no_positive_proof(self):
         class NoSourceBrowser(FakeBrowser):
@@ -430,7 +927,7 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="terminal-ambiguous-evidence")
             with self.assertRaises(DestructiveActionAmbiguous):
-                Cleaner(browser, diagnostic=diagnostic, day_mode=False, max_batches=1).run()
+                Cleaner(browser, pending=_test_pending(), execute=True, confirm_all_media_to_trash=True, diagnostic=diagnostic, day_mode=False, max_batches=1).run()
 
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
             terminal = next(event for event in events if event["phase"] == "cleaner_terminal_state")
@@ -443,7 +940,7 @@ class BrowserAdapterTests(unittest.TestCase):
             pending = PendingActionStore(Path(tmp) / "pending.json")
             pending.save(label="day pending", kind="day", scroll_top=0)
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-loaded-evidence")
-            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block").run()
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block", execute=True, confirm_all_media_to_trash=True).run()
 
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
             loaded = next(event for event in events if event["phase"] == "pending_loaded")
@@ -490,7 +987,7 @@ class BrowserAdapterTests(unittest.TestCase):
             pending = PendingActionStore(Path(tmp) / "pending.json")
             pending.save(label="Foto - pending", kind="day", scroll_top=0)
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-source")
-            Cleaner(browser, pending=pending, diagnostic=diagnostic, pending_policy="block").run()
+            Cleaner(browser, pending=pending, diagnostic=diagnostic, pending_policy="block", execute=True, confirm_all_media_to_trash=True).run()
 
             self.assertIsNotNone(pending.load())
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
@@ -501,7 +998,7 @@ class BrowserAdapterTests(unittest.TestCase):
             pending = PendingActionStore(Path(tmp) / "pending.json")
             pending.save(label="day pending", kind="day", scroll_top=0)
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-block-evidence")
-            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block").run()
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block", execute=True, confirm_all_media_to_trash=True).run()
 
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
             skipped = next(event for event in events if event["phase"] == "pending_reconciliation_skipped")
@@ -513,7 +1010,7 @@ class BrowserAdapterTests(unittest.TestCase):
             pending = PendingActionStore(Path(tmp) / "pending.json")
             pending.save(label="day pending", kind="day", scroll_top=0)
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="pending-skip")
-            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block").run()
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block", execute=True, confirm_all_media_to_trash=True).run()
 
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
             skipped = next(event for event in events if event["phase"] == "pending_reconciliation_skipped")
@@ -525,7 +1022,7 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="ambiguous-proof")
             with self.assertRaises(DestructiveActionAmbiguous):
-                Cleaner(browser, day_mode=False, diagnostic=diagnostic).run()
+                Cleaner(browser, pending=_test_pending(), execute=True, confirm_all_media_to_trash=True, day_mode=False, diagnostic=diagnostic).run()
             import json
             events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
 
@@ -569,7 +1066,7 @@ class BrowserAdapterTests(unittest.TestCase):
 
     def test_pass_done_is_terminal_without_second_run(self):
         browser = FakeBrowser([["old-1"]])
-        cleaner = Cleaner(browser, dry_run=True, day_mode=False, max_batches=1)
+        cleaner = Cleaner(browser, dry_run=True, day_mode=False)
 
         first = cleaner.run()
         second = cleaner.run()
@@ -606,7 +1103,7 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="reconcile-source-positive")
-            Cleaner(browser, day_mode=True, diagnostic=diagnostic, pending=pending, max_batches=1).run()
+            Cleaner(browser, day_mode=True, diagnostic=diagnostic, pending=pending, max_batches=1, execute=True, confirm_all_media_to_trash=True).run()
             import json
             events = [json.loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
 
@@ -628,7 +1125,7 @@ class BrowserAdapterTests(unittest.TestCase):
             checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="reconcile-source")
             with self.assertRaises(DestructiveActionAmbiguous):
-                Cleaner(browser, day_mode=True, diagnostic=diagnostic, pending=pending, checkpoint=checkpoint, max_batches=1).run()
+                Cleaner(browser, execute=True, confirm_all_media_to_trash=True, day_mode=True, diagnostic=diagnostic, pending=pending, checkpoint=checkpoint, max_batches=1).run()
 
             self.assertIsNotNone(pending.load())
             import json
@@ -668,6 +1165,7 @@ class BrowserAdapterTests(unittest.TestCase):
 
         self.assertEqual(processed, 1)
         self.assertTrue(cleaner.stop_requested)
+        self.assertEqual(cleaner.last_outcome, PassOutcome.BOUNDED_STOP)
         self.assertEqual(browser.trashed, [])
 
     def test_bounded_media_pass_requests_stop(self):
@@ -678,6 +1176,7 @@ class BrowserAdapterTests(unittest.TestCase):
 
         self.assertEqual(processed, 1)
         self.assertTrue(cleaner.stop_requested)
+        self.assertEqual(cleaner.last_outcome, PassOutcome.BOUNDED_STOP)
         self.assertEqual(browser.trashed, [])
 
     def test_cleaner_skips_stale_day_and_continues(self):
@@ -701,11 +1200,48 @@ class BrowserAdapterTests(unittest.TestCase):
                 return False
 
         browser = SkipStaleBrowser()
-        processed = Cleaner(browser, day_mode=True, max_retries=1).run()
+        processed = Cleaner(browser, pending=_test_pending(), day_mode=True, max_retries=1, execute=True, confirm_all_media_to_trash=True).run()
 
         self.assertEqual(processed, 1)
         self.assertEqual(browser.advance_count, 2)
         self.assertEqual(browser.trashed, [["day"]])
+
+    def test_cleaner_recovers_after_bounded_day_scan_failures(self):
+        class RecoverAfterRoundBrowser(FakeBrowser):
+            def __init__(self):
+                super().__init__([("recovered day", 1)])
+                self.scan_attempts = 0
+                self.recover_calls = 0
+                self.reset_calls = 0
+
+            def select_current_day(self):
+                self.scan_attempts += 1
+                if self.scan_attempts <= 2:
+                    raise TimeoutError("virtualized control is unstable")
+                return super().select_current_day()
+
+            def recover(self):
+                self.recover_calls += 1
+
+            def reset_timeline_to_top(self):
+                self.reset_calls += 1
+
+        browser = RecoverAfterRoundBrowser()
+        cleaner = Cleaner(
+            browser,
+            pending=_test_pending(),
+            day_mode=True,
+            max_retries=1,
+            max_day_scan_failures=2,
+            max_batches=1,
+            execute=True,
+            confirm_all_media_to_trash=True,
+        )
+
+        self.assertEqual(cleaner.run(), 1)
+        self.assertEqual(browser.trashed, [["day"]])
+        self.assertEqual(browser.reset_calls, 1)
+        self.assertEqual(browser.recover_calls, 1)
 
     def test_cleaner_stops_after_bounded_day_scan_failures(self):
         class AlwaysStaleBrowser(FakeBrowser):
@@ -717,7 +1253,7 @@ class BrowserAdapterTests(unittest.TestCase):
 
         browser = AlwaysStaleBrowser([])
         processed = Cleaner(
-            browser,
+            browser, pending=_test_pending(), execute=True, confirm_all_media_to_trash=True,
             day_mode=True,
             max_retries=1,
             max_day_scan_failures=2,
@@ -735,7 +1271,7 @@ class BrowserAdapterTests(unittest.TestCase):
                 pass
 
         browser = AlwaysStaleBrowser([])
-        cleaner = Cleaner(browser, day_mode=True, max_retries=1, max_day_scan_failures=1)
+        cleaner = Cleaner(browser, pending=_test_pending(), execute=True, confirm_all_media_to_trash=True, day_mode=True, max_retries=1, max_day_scan_failures=1)
         cleaner.run()
 
         self.assertTrue(cleaner.stop_requested)
@@ -757,7 +1293,7 @@ class BrowserAdapterTests(unittest.TestCase):
                 self.recover_calls += 1
 
         browser = RetryDayBrowser()
-        processed = Cleaner(browser, day_mode=True, max_retries=1).run()
+        processed = Cleaner(browser, pending=_test_pending(), day_mode=True, max_retries=1, execute=True, confirm_all_media_to_trash=True).run()
 
         self.assertEqual(processed, 1)
         self.assertEqual(browser.recover_calls, 1)
@@ -836,17 +1372,37 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertIsNone(discarded["feedback_source"])
             self.assertFalse(any(event["phase"] == "pending_reconciled" for event in events))
 
-    def test_pending_inspect_stops_without_retrying_destructive_action(self):
+    def test_pending_inspect_reconciles_positive_feedback_before_stopping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(label="day pending", kind="day", scroll_top=0)
+            browser = FakeBrowser([("new day", 1)])
+            browser.wait_for_target_absence = Mock(return_value=True)
+            browser.last_feedback_source = "browser_positive_feedback"
+
+            cleaner = Cleaner(
+                browser,
+                day_mode=True,
+                pending=pending,
+                pending_policy="inspect",
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+            self.assertEqual(cleaner.run(), 1)
+            self.assertEqual(cleaner.last_outcome, PassOutcome.STOP_SAFE)
+            self.assertIsNone(pending.load())
+            browser.wait_for_target_absence.assert_called_once_with("day pending", timeout_ms=30000)
+
+    def test_pending_inspect_discards_after_timeout_and_continues_without_destructive_auth(self):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")
             pending.save(label="day pending", kind="day", scroll_top=0)
             browser = FakeBrowser([("new day", 1)])
 
             cleaner = Cleaner(browser, day_mode=True, pending=pending, pending_policy="inspect")
-            self.assertEqual(cleaner.run(), 0)
-            self.assertEqual(cleaner.last_outcome, PassOutcome.PENDING_UNRESOLVED)
+            self.assertEqual(cleaner.run(), 1)
             self.assertEqual(browser.trashed, [])
-            self.assertIsNotNone(pending.load())
+            self.assertIsNone(pending.load())
 
     def test_pending_policy_block_does_not_call_retry_adapter(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -909,7 +1465,7 @@ class BrowserAdapterTests(unittest.TestCase):
             pending = PendingActionStore(Path(tmp) / "pending.json")
             pending.save(label="batch:1", kind="media_batch", scroll_top=0, count=2)
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-unresolved")
-            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block").run()
+            Cleaner(FakeBrowser([]), pending=pending, diagnostic=diagnostic, pending_policy="block", execute=True, confirm_all_media_to_trash=True).run()
 
             events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
             unresolved = next(event for event in events if event["phase"] == "pending_unresolved")
@@ -925,7 +1481,7 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending.json")
             browser = AmbiguousBatchBrowser([["photo-1", "photo-2"]])
-            cleaner = Cleaner(browser, day_mode=False, pending=pending)
+            cleaner = Cleaner(browser, execute=True, confirm_all_media_to_trash=True, day_mode=False, pending=pending)
             with self.assertRaises(DestructiveActionAmbiguous):
                 cleaner.run()
             self.assertTrue(cleaner.stop_requested)
@@ -934,7 +1490,7 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(record["count"], 2)
 
             browser = FakeBrowser([["photo-3"]])
-            self.assertEqual(Cleaner(browser, day_mode=False, pending=pending).run(), 0)
+            self.assertEqual(Cleaner(browser, day_mode=False, pending=pending, execute=True, confirm_all_media_to_trash=True).run(), 0)
             self.assertEqual(browser.trashed, [])
 
     def test_ambiguous_media_batch_can_be_discarded_and_loop_continues(self):
@@ -955,16 +1511,60 @@ class BrowserAdapterTests(unittest.TestCase):
                 pending=pending,
                 discard_ambiguous_media_batches=True,
                 pending_policy="discard",
+                execute=True,
+                confirm_all_media_to_trash=True,
             ).run()
 
             self.assertEqual(processed, 1)
             self.assertIsNone(pending.load())
             self.assertEqual(browser.trashed, [["photo-3"]])
 
+    def test_inspected_media_batch_timeout_discards_journal_and_continues(self):
+        class TimeoutMediaBatchBrowser(FakeBrowser):
+            last_feedback_source = None
+
+            def wait_for_target_absence(self, _label, timeout_ms):
+                self.waited_timeout_ms = timeout_ms
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pending = PendingActionStore(Path(tmp) / "pending.json")
+            pending.save(
+                label="batch:1",
+                kind="media_batch",
+                scroll_top=0,
+                count=2,
+                media_ids=["photo-1", "photo-2"],
+            )
+            diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="media-batch-timeout-discard")
+            checkpoint = CheckpointStore(Path(tmp) / "checkpoint.json")
+            checkpoint.save = Mock(wraps=checkpoint.save)
+            browser = TimeoutMediaBatchBrowser([["photo-3"]])
+
+            processed = Cleaner(
+                browser,
+                day_mode=False,
+                pending=pending,
+                checkpoint=checkpoint,
+                diagnostic=diagnostic,
+                pending_policy="inspect",
+                pending_timeout_ms=333,
+                max_batches=1,
+                execute=True,
+                confirm_all_media_to_trash=True,
+            ).run()
+
+            self.assertEqual(processed, 0)
+            self.assertIsNone(pending.load())
+            self.assertEqual(browser.waited_timeout_ms, 333)
+            self.assertEqual(browser.trashed, [["photo-3"]])
+            events = [__import__("json").loads(line) for line in Path(tmp, "run.jsonl").read_text().splitlines()]
+            self.assertTrue(any(event["phase"] == "pending_discarded_after_timeout" for event in events))
+
     def test_cleaner_uses_selection_size_as_visible_batch_limit(self):
         browser = FakeBrowser([["photo-1", "photo-2", "photo-3"]])
 
-        processed = Cleaner(browser, day_mode=False, batch_size=3).run()
+        processed = Cleaner(browser, pending=_test_pending(), execute=True, confirm_all_media_to_trash=True, day_mode=False, batch_size=3).run()
 
         self.assertEqual(processed, 1)
         self.assertEqual(browser.trashed, [["photo-1", "photo-2", "photo-3"]])
@@ -987,7 +1587,7 @@ class BrowserAdapterTests(unittest.TestCase):
                 return True
 
         browser = TimelineBrowser()
-        processed = Cleaner(browser, day_mode=True, max_batches=1, max_idle_scrolls=2).run()
+        processed = Cleaner(browser, pending=_test_pending(), execute=True, confirm_all_media_to_trash=True, day_mode=True, max_batches=1, max_idle_scrolls=2).run()
 
         self.assertEqual(processed, 1)
         self.assertEqual(browser.advance_count, 2)
@@ -1010,7 +1610,7 @@ class BrowserAdapterTests(unittest.TestCase):
                 return self.advance_count == 1
 
         browser = TimelineBrowser()
-        processed = Cleaner(browser, day_mode=True, max_batches=1, max_idle_scrolls=2).run()
+        processed = Cleaner(browser, pending=_test_pending(), execute=True, confirm_all_media_to_trash=True, day_mode=True, max_batches=1, max_idle_scrolls=2).run()
 
         self.assertEqual(processed, 1)
         self.assertEqual(browser.advance_count, 1)
@@ -1032,6 +1632,8 @@ class BrowserAdapterTests(unittest.TestCase):
                 day_mode=True,
                 pending=pending,
                 pending_timeout_ms=777,
+                execute=True,
+                confirm_all_media_to_trash=True,
             ).run()
 
         self.assertEqual(processed, 1)
@@ -1051,19 +1653,25 @@ class BrowserAdapterTests(unittest.TestCase):
         browser = DelayedAbsenceBrowser([("2 Aug", 1)])
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending-action.json")
-            processed = Cleaner(
+            cleaner = Cleaner(
                 browser,
                 day_mode=True,
                 pending=pending,
                 pending_timeout_ms=321,
                 max_idle_scrolls=1,
-            ).run()
+                max_batches=1,
+                execute=True,
+                confirm_all_media_to_trash=True,
+            )
+            processed = cleaner.run()
 
             self.assertEqual(processed, 1)
             self.assertEqual(browser.waited_label, "2 Aug")
             self.assertEqual(browser.waited_timeout_ms, 321)
             self.assertEqual(browser.trashed, [["day"]])
             self.assertIsNone(pending.load())
+            self.assertEqual(cleaner.last_outcome, PassOutcome.BOUNDED_STOP)
+            self.assertTrue(cleaner.stop_requested)
 
     def test_pending_target_still_present_does_not_select_or_trash_again(self):
         class StillPresentBrowser(FakeBrowser):
@@ -1131,7 +1739,12 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending-action.json")
             processed = Cleaner(
-                browser, day_mode=True, pending=pending, max_idle_scrolls=1
+                browser,
+                day_mode=True,
+                pending=pending,
+                max_idle_scrolls=1,
+                execute=True,
+                confirm_all_media_to_trash=True,
             ).run()
 
             self.assertEqual(processed, 1)
@@ -1171,7 +1784,7 @@ class BrowserAdapterTests(unittest.TestCase):
             self.assertEqual(cleaner.run(), 1)
             self.assertIsNone(pending.load())
             self.assertEqual(browser.days, ["2 Aug"])
-            self.assertEqual(cleaner.last_outcome, PassOutcome.PASS_DONE)
+            self.assertEqual(cleaner.last_outcome, PassOutcome.BOUNDED_STOP)
 
     def test_block_pending_does_not_poll_browser(self):
         class PollSpyBrowser(FakeBrowser):
@@ -1233,11 +1846,13 @@ class BrowserAdapterTests(unittest.TestCase):
         browser = SingleMediaBrowser([("Foto - 2 ago", 1)])
         with tempfile.TemporaryDirectory() as tmp:
             pending = PendingActionStore(Path(tmp) / "pending-action.json")
-            cleaner = Cleaner(browser, day_mode=True, pending=pending, max_batches=1)
+            cleaner = Cleaner(browser, execute=True, confirm_all_media_to_trash=True, day_mode=True, pending=pending, max_batches=1)
             cleaner.run()
 
             self.assertEqual(browser.trashed, [["media"]])
-            self.assertEqual(pending.load()["kind"], "media")
+            self.assertEqual(pending.load()["kind"], "media_batch")
+            self.assertEqual(pending.load()["count"], 0)
+            self.assertEqual(pending.load()["media_ids"], [])
 
     def test_confirmed_day_action_resets_timeline_once(self):
         class UnresolvedDayBrowser(FakeBrowser):
@@ -1249,7 +1864,7 @@ class BrowserAdapterTests(unittest.TestCase):
                 return False
 
         browser = UnresolvedDayBrowser([("2 Aug", 1)])
-        cleaner = Cleaner(browser, day_mode=True, max_idle_scrolls=1)
+        cleaner = Cleaner(browser, pending=_test_pending(), execute=True, confirm_all_media_to_trash=True, day_mode=True, max_idle_scrolls=1)
         cleaner.run()
 
         self.assertTrue(cleaner.stop_requested)
@@ -1266,7 +1881,7 @@ class BrowserAdapterTests(unittest.TestCase):
                 self.reset_calls += 1
 
         browser = ResetTrackingBrowser()
-        processed = Cleaner(browser, day_mode=True, max_idle_scrolls=1).run()
+        processed = Cleaner(browser, pending=_test_pending(), day_mode=True, max_idle_scrolls=1, execute=True, confirm_all_media_to_trash=True).run()
 
         self.assertEqual(processed, 1)
         self.assertEqual(browser.reset_calls, 1)
@@ -1274,7 +1889,7 @@ class BrowserAdapterTests(unittest.TestCase):
     def test_cleaner_handles_adjacent_days_without_timeline_reset(self):
         browser = FakeBrowser([("2 Aug", 3), ("1 Aug", 2)])
 
-        processed = Cleaner(browser, day_mode=True, max_idle_scrolls=1).run()
+        processed = Cleaner(browser, pending=_test_pending(), day_mode=True, max_idle_scrolls=1, execute=True, confirm_all_media_to_trash=True).run()
 
         self.assertEqual(processed, 2)
         self.assertEqual(browser.days, ["2 Aug", "1 Aug"])
@@ -1283,7 +1898,7 @@ class BrowserAdapterTests(unittest.TestCase):
     def test_cleaner_processes_days_without_selecting_tiles(self):
         browser = FakeBrowser([("12 Aug", 3), ("13 Aug", 2)])
 
-        processed = Cleaner(browser, day_mode=True, max_idle_scrolls=1).run()
+        processed = Cleaner(browser, pending=_test_pending(), day_mode=True, max_idle_scrolls=1, execute=True, confirm_all_media_to_trash=True).run()
 
         self.assertEqual(processed, 2)
         self.assertEqual(browser.days, ["12 Aug", "13 Aug"])
@@ -1292,7 +1907,7 @@ class BrowserAdapterTests(unittest.TestCase):
     def test_max_batches_stops_after_limit(self):
         browser = FakeBrowser([["old-1"], ["old-2"], ["old-3"]])
 
-        processed = Cleaner(browser, max_batches=2, day_mode=False).run()
+        processed = Cleaner(browser, pending=_test_pending(), execute=True, confirm_all_media_to_trash=True, max_batches=2, day_mode=False).run()
 
         self.assertEqual(processed, 2)
         self.assertEqual(browser.trashed, [["old-1"], ["old-2"]])
@@ -1319,7 +1934,7 @@ class BrowserAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             diagnostic = DiagnosticLog(Path(tmp) / "run.jsonl", run_id="ambiguous")
             with self.assertRaises(DestructiveActionAmbiguous):
-                Cleaner(browser, diagnostic=diagnostic, day_mode=False).run()
+                Cleaner(browser, pending=_test_pending(), diagnostic=diagnostic, day_mode=False, execute=True, confirm_all_media_to_trash=True).run()
 
             events = Path(tmp, "run.jsonl").read_text()
 

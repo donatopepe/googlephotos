@@ -179,18 +179,39 @@ Copertura aggiunta: contesto PID/UID/user/policy, pass terminale senza loop dupl
 
 ## Stato closure corrente
 
-Correzioni in worktree, verificate e committate:
+Correzioni implementate nel worktree non ancora committate né integrate in `main`:
 
 - `main.py` esegue un solo pass bounded; non riapre né ripete Cleaner dopo stop.
 - `Cleaner.run()` rifiuta re-entry dopo outcome terminale.
 - Journal include terminal summary unico da `main`, `run_started`/`cleaner_stopped`/`run_finished` contract, contesto processo/lock/policy/path, messaggi errore sanitizzati.
-- Previous ambiguous Trash click was not retried after discard. The later all-photos launch reached a new ambiguous Trash result and was stopped; further destructive launches are blocked until explicit reconciliation with positive visible feedback.
+- Le azioni Trash richiedono doppia autorizzazione, pending durabile prima del click e feedback positivo visibile; timeout, overlay sconosciuto, refresh fallito o quantità incoerente fermano il run senza retry cieco.
+- Il fallback senza selettore giorno usa una batch media bounded con ID reali, esclusioni per ID ambigui e tombstone locali; `batch_size`/`selection_size` resta il limite operativo.
+- `refresh_after_trash()` viene eseguito solo dopo feedback positivo, con reload bounded, fallback legacy, nuova autenticazione e stabilizzazione timeline.
+- Il cleanup overlay è limitato a pulsanti visibili con etichette note (`Got it`, `OK`, `Chiudi`, `Close`) e usa click normali; overlay sconosciuti restano fail-closed.
+- Una selezione stale dopo refresh invalida la selezione e impedisce l’azione Trash.
+- Un target tombstonato non viene riselezionato: il cleaner richiede avanzamento bounded della timeline prima di continuare.
 
-### Rischi da chiudere prima del merge
+Verifica locale più recente nel worktree:
 
-- Eseguire review conformance manuale sul diff completo.
-- Eventi terminali separati: `cleaner_terminal_state` interno Cleaner, un solo `cleaner_stopped` summary centralizzato in `main` dentro `finally`, `run_finished` finale con outcome anche su interrupt/close failure. Summary include process/profile/lock identity, pending/checkpoint paths e outcome. Media Trash completion include `positive_feedback=true`, `result=confirmed`, `feedback_source=browser_positive_feedback`; ambiguous event include error message e nessun completion. Eccezioni dopo outcome Cleaner preservano `destructive_ambiguous`/stop outcome invece di appiattire a `failed`.
-- Any future delete run must start with a fresh preflight and must not assume the discarded ambiguous action was unsuccessful; use `--reconcile-pending` first. The explicit reconcile mode never performs a new destructive click.
+```text
+/Users/donato/googlephotos/.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+Ran 284 tests in 51.486s
+OK
+
+/Users/donato/googlephotos/.venv/bin/python -m compileall -q .   # exit 0
+git diff --check                                                   # exit 0
+```
+
+È stato aggiunto anche il test dedicato all’avanzamento dopo target ambiguo e il test di compatibilità overlay con adapter legacy; i tre test mirati overlay/timeline/recovery passano.
+
+Stato runtime dopo gli ultimi tentativi: nessun `main.py` attivo, nessun `/tmp/pending-action.json` e nessun checkpoint `/tmp/googlephotos-recovery-run-resume-checkpoint.json`; Chrome CDP autenticato resta attivo su `127.0.0.1:9222`. Nessun nuovo run distruttivo è stato avviato dopo l’ultima verifica. La scansione completa della libreria non è ancora dimostrata: gli ultimi run live si sono fermati in sicurezza su stalli/overlay, quindi non va dichiarato completamento della libreria.
+
+### Rischi e attività residue prima del merge
+
+- Eseguire review conformance manuale sul diff completo e integrare nel checkout principale preservando le modifiche già presenti.
+- Eseguire un dry-run bounded sul CDP autenticato prima di qualunque nuova autorizzazione distruttiva.
+- Un nuovo run distruttivo richiede autorizzazione esplicita rinnovata; deve fermarsi su qualsiasi ambiguità e non può assumere che azioni precedenti scartate siano riuscite o fallite.
+- La closure review automatica non è stata eseguita perché l’utente ha vietato ulteriori subagent.
 
 ## Problemi storici
 

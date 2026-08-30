@@ -462,7 +462,7 @@ class MainFlowTests(unittest.TestCase):
 
 class HandoffTests(unittest.TestCase):
     def test_handoff_has_current_status_block(self):
-        handoff = Path("/home/public/googlephotos/HANDOFF-2026-08-24-googlephotos-scan.md")
+        handoff = Path(__file__).resolve().parents[1] / "HANDOFF-2026-08-24-googlephotos-scan.md"
         text = handoff.read_text(encoding="utf-8")
 
         self.assertIn("## Stato corrente", text)
@@ -470,10 +470,83 @@ class HandoffTests(unittest.TestCase):
         self.assertTrue("Nessun merge su `main`" in text or "Merge completato in `main`" in text)
 
 class CliTests(unittest.TestCase):
+    def test_parser_accepts_inactivity_timeout(self):
+        args = parse_args(["--inactivity-timeout-seconds", "12"])
+        self.assertEqual(args.inactivity_timeout_seconds, 12)
+
+    def test_parser_accepts_cdp_url(self):
+        args = parse_args(["--cdp-url", "http://127.0.0.1:9222"])
+        self.assertEqual(args.cdp_url, "http://127.0.0.1:9222")
+
+    def test_main_wires_browser_connection_and_timeout_options(self):
+        import main
+        from unittest.mock import Mock, patch
+
+        browser = Mock()
+        browser.profile_dir = Path("profile")
+        browser.profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+        browser.page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+        browser.context = type("Context", (), {"pages": [browser.page]})()
+        browser.close = Mock()
+        cleaner = Mock()
+        cleaner.last_outcome = type("Outcome", (), {"value": "pass_done"})()
+        cleaner.stop_requested = True
+        cleaner.run.return_value = 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", return_value=browser) as browser_factory, patch.object(main, "Cleaner", return_value=cleaner):
+                result = main.run([
+                    "--cdp-url", "http://127.0.0.1:9222",
+                    "--inactivity-timeout-seconds", "12",
+                    "--log-file", str(log),
+                    "--profile-dir", str(Path(tmp) / "profile"),
+                ])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(browser_factory.call_args.kwargs["cdp_url"], "http://127.0.0.1:9222")
+        self.assertEqual(browser_factory.call_args.kwargs["inactivity_timeout_seconds"], 12)
+
+    def test_main_wires_authorization_and_pointer_options(self):
+        import main
+        from unittest.mock import Mock, patch
+
+        browser = Mock()
+        browser.profile_dir = Path("profile")
+        browser.profile_lock = type("Lock", (), {"path": Path("profile/.lock"), "pid": 7, "acquired": True})()
+        browser.page = type("Page", (), {"url": "https://photos.google.com/u/0/"})()
+        browser.context = type("Context", (), {"pages": [browser.page]})()
+        browser.close = Mock()
+        cleaner = Mock()
+        cleaner.last_outcome = type("Outcome", (), {"value": "pass_done"})()
+        cleaner.stop_requested = True
+        cleaner.run.return_value = 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "run.log"
+            with patch.object(main, "PlaywrightBrowser", return_value=browser) as browser_factory, patch.object(main, "Cleaner", return_value=cleaner) as cleaner_factory:
+                result = main.run([
+                    "--execute",
+                    "--confirm-all-media-to-trash",
+                    "--max-batches", "1",
+                    "--pointer-pause-ms", "17",
+                    "--pointer-max-steps", "3",
+                    "--log-file", str(log),
+                    "--profile-dir", str(Path(tmp) / "profile"),
+                ])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(browser_factory.call_args.kwargs["pointer_pause_ms"], 17)
+        self.assertEqual(browser_factory.call_args.kwargs["pointer_max_steps"], 3)
+        self.assertTrue(cleaner_factory.call_args.kwargs["execute"])
+        self.assertTrue(cleaner_factory.call_args.kwargs["confirm_all_media_to_trash"])
+
     def test_parser_has_safe_defaults(self):
         args = parse_args([])
 
-        self.assertFalse(args.dry_run)
+        self.assertTrue(args.dry_run)
+        self.assertFalse(args.execute)
+        self.assertFalse(args.confirm_all_media_to_trash)
         self.assertIsNone(args.max_batches)
         self.assertEqual(args.profile_dir, Path("data/browser-profile"))
         self.assertEqual(args.log_file, Path("data/run.log"))
@@ -486,7 +559,7 @@ class CliTests(unittest.TestCase):
         self.assertFalse(args.media_first)
         self.assertEqual(args.scroll_step, 240)
         self.assertEqual(args.scroll_delay_ms, 1500)
-        self.assertEqual(args.pending_action, "block")
+        self.assertEqual(args.pending_action, "inspect")
         self.assertEqual(args.pending_timeout_ms, 30000)
 
     def test_parser_supports_diagnostic_runtime_context_defaults(self):
@@ -494,6 +567,23 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(args.diagnostics_dir, Path("data/diagnostics"))
         self.assertEqual(args.profile_dir, Path("data/browser-profile"))
+
+    def test_parser_requires_explicit_destructive_authorization(self):
+        with self.assertRaises(SystemExit):
+            parse_args(["--execute"])
+        with self.assertRaises(SystemExit):
+            parse_args(["--confirm-all-media-to-trash"])
+
+        args = parse_args(["--execute", "--confirm-all-media-to-trash"])
+        self.assertTrue(args.execute)
+        self.assertTrue(args.confirm_all_media_to_trash)
+        self.assertFalse(args.dry_run)
+
+    def test_parser_rejects_dry_run_with_destructive_authorization(self):
+        with self.assertRaises(SystemExit):
+            parse_args(
+                ["--dry-run", "--execute", "--confirm-all-media-to-trash"]
+            )
 
     def test_parser_supports_dry_run_and_batch_limit(self):
         args = parse_args(
@@ -528,10 +618,23 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.selection_size, 100)
         self.assertTrue(args.media_first)
 
-    def test_parser_supports_scroll_tuning(self):
-        args = parse_args(["--scroll-step", "180", "--scroll-delay-ms", "2000"])
+    def test_parser_supports_scroll_and_pointer_tuning(self):
+        args = parse_args(
+            [
+                "--scroll-step",
+                "180",
+                "--scroll-delay-ms",
+                "2000",
+                "--pointer-pause-ms",
+                "60",
+                "--pointer-max-steps",
+                "5",
+            ]
+        )
         self.assertEqual(args.scroll_step, 180)
         self.assertEqual(args.scroll_delay_ms, 2000)
+        self.assertEqual(args.pointer_pause_ms, 60)
+        self.assertEqual(args.pointer_max_steps, 5)
 
     def test_parser_supports_pending_policies(self):
         args = parse_args(["--pending-action", "inspect", "--pending-timeout-ms", "5000"])

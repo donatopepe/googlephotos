@@ -7,6 +7,24 @@ from pathlib import Path
 from typing import Sequence
 
 
+class _FailClosedArgumentParser(argparse.ArgumentParser):
+    """Reject unsafe mode combinations before the runtime is constructed."""
+
+    def parse_args(self, args=None, namespace=None):
+        parsed = super().parse_args(args, namespace)
+        if parsed.dry_run and (parsed.execute or parsed.confirm_all_media_to_trash):
+            self.error("--dry-run cannot be combined with destructive authorization")
+        if parsed.execute != parsed.confirm_all_media_to_trash:
+            self.error(
+                "--execute and --confirm-all-media-to-trash must be supplied together"
+            )
+        # No mode flag is safe by default: an omitted mode means dry-run,
+        # never an implicit Trash execution.
+        if not parsed.execute:
+            parsed.dry_run = True
+        return parsed
+
+
 def _positive_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -18,13 +36,24 @@ def _positive_int(value: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _FailClosedArgumentParser(
         description="Google Photos browser cleaner: process visible photos and days."
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
+        default=False,
         help="scan and log batches without moving photos to Trash",
+    )
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="enable moving selected photos and videos to the Google Photos Trash",
+    )
+    parser.add_argument(
+        "--confirm-all-media-to-trash",
+        action="store_true",
+        help="explicitly confirm that all selected photos and videos may be moved to Trash",
     )
     parser.add_argument(
         "--reconcile-pending",
@@ -42,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("data/browser-profile"),
         help="persistent browser profile directory",
+    )
+    parser.add_argument(
+        "--cdp-url",
+        default=None,
+        help="connect to an already authenticated Chrome DevTools endpoint instead of launching a browser",
     )
     parser.add_argument(
         "--log-file",
@@ -99,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-day-scan-failures",
         type=_positive_int,
         default=3,
-        help="stop after this many consecutive day-scan failure cycles (default: 3)",
+        help="failure cycles before one bounded timeline recovery round (default: 3)",
     )
     parser.add_argument(
         "--scroll-step",
@@ -114,10 +148,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="wait after each timeline scroll in milliseconds (default: 1500)",
     )
     parser.add_argument(
+        "--pointer-pause-ms",
+        type=_positive_int,
+        default=40,
+        help="pause between bounded visible pointer moves in milliseconds (default: 40)",
+    )
+    parser.add_argument(
+        "--pointer-max-steps",
+        type=_positive_int,
+        default=4,
+        help="maximum points in each bounded pointer trajectory (default: 4)",
+    )
+    parser.add_argument(
+        "--inactivity-timeout-seconds",
+        type=_positive_int,
+        default=300,
+        help="stop a single authentication/scan wait after this inactivity bound (default: 300)",
+    )
+    parser.add_argument(
         "--pending-action",
         choices=("block", "inspect", "discard"),
-        default="block",
-        help="policy for existing pending Trash action (default: block)",
+        default="inspect",
+        help="pending Trash policy: inspect discards only after timeout and continues (default: inspect)"
     )
     parser.add_argument(
         "--pending-timeout-ms",
